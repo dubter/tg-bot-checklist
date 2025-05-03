@@ -198,7 +198,7 @@ func initDB() {
 		user_input JSONB,
 		algorithm_result TEXT,
 		gpt_answer TEXT,
-		equal BOOLEAN,
+		equal BOOLEAN DEFAULT FALSE,
 		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 	);`
 
