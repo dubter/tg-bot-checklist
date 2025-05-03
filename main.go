@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -211,6 +212,34 @@ func initDB() {
 	}
 }
 
+type RecommendationRequest struct {
+	SelectedCriteria   []string          `json:"selected_criteria"`
+	CriteriaPriorities map[string]int    `json:"criteria_priorities"`
+	OverriddenScores   map[string]Scores `json:"overridden_scores"`
+	SpecialValues      map[string]string `json:"special_values"`
+}
+
+type CriterionDetail struct {
+	Name            string `json:"name"`
+	Priority        int    `json:"priority"`
+	Source          string `json:"source"`
+	OnPremScore     int    `json:"on_prem_score"`
+	PrivateScore    int    `json:"private_score"`
+	PublicScore     int    `json:"public_score"`
+	OnPremWeighted  int    `json:"on_prem_weighted"`
+	PrivateWeighted int    `json:"private_weighted"`
+	PublicWeighted  int    `json:"public_weighted"`
+}
+
+type RecommendationResponse struct {
+	OnPremTotal    int               `json:"on_prem_total"`
+	PrivateTotal   int               `json:"private_total"`
+	PublicTotal    int               `json:"public_total"`
+	Recommendation string            `json:"recommendation"`
+	Details        []CriterionDetail `json:"details"`
+	AIAnalysis     string            `json:"ai_analysis,omitempty"`
+}
+
 func main() {
 	logger = NewLogger(true)
 
@@ -223,6 +252,8 @@ func main() {
 
 	initDB()
 	defer conn.Close(context.Background())
+
+	go startHTTPServer()
 
 	bot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
@@ -307,6 +338,214 @@ func main() {
 			handleCallbackQuery(bot, update.CallbackQuery, chatID)
 		}
 	}
+}
+
+func startHTTPServer() {
+	port := os.Getenv("HTTP_PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	http.HandleFunc("/api/recommend", corsMiddleware(recommendHandler))
+
+	logger.Printf("HTTP сервер запущен на порту %s", port)
+	if err := http.ListenAndServe(":"+port, nil); err != nil {
+		logger.Printf("Ошибка запуска HTTP сервера: %v", err)
+	}
+}
+
+func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next(w, r)
+	}
+}
+
+func recommendHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req RecommendationRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Ошибка парсинга JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if len(req.SelectedCriteria) == 0 {
+		http.Error(w, "Необходимо выбрать хотя бы один критерий", http.StatusBadRequest)
+		return
+	}
+
+	response, err := calculateRecommendation(req)
+	if err != nil {
+		http.Error(w, "Ошибка при расчете рекомендации: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	userInputJSON, err := json.Marshal(req)
+	if err == nil && conn != nil {
+		insertSQL := `INSERT INTO answers (user_id, user_input, algorithm_result, gpt_answer, equal) 
+                      VALUES ($1, $2, $3, $4, $5)`
+
+		equal := false
+		if response.AIAnalysis != "" {
+			simpleRec := strings.Split(response.Recommendation, " ")[0]
+			if strings.Contains(strings.ToLower(response.AIAnalysis), strings.ToLower(simpleRec)) {
+				equal = true
+			}
+			if strings.HasPrefix(response.Recommendation, "Требуется") {
+				equal = false
+			}
+		}
+
+		_, err = conn.Exec(context.Background(), insertSQL,
+			0, // API запрос, используем 0 как идентификатор
+			userInputJSON,
+			response.Recommendation,
+			response.AIAnalysis,
+			equal)
+
+		if err != nil {
+			logger.Printf("Ошибка сохранения API результата в БД: %v", err)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+
+func calculateRecommendation(req RecommendationRequest) (*RecommendationResponse, error) {
+	onPremTotal := 0
+	privateTotal := 0
+	publicTotal := 0
+
+	details := make([]CriterionDetail, 0, len(req.SelectedCriteria))
+
+	for _, cName := range req.SelectedCriteria {
+		crit := findCriterionByName(cName)
+		if crit.Name == "" {
+			logger.Printf("Критерий не найден: %s", cName)
+			continue
+		}
+
+		prio, prioOk := req.CriteriaPriorities[cName]
+		if !prioOk {
+			prio = 1
+		}
+
+		scores := crit.BaseScores
+		source := "базовый"
+
+		if crit.IsSpecial {
+			val, valOk := req.SpecialValues[cName]
+			if valOk {
+				scores = getScoresForSpecialCriterion(crit.Name, val)
+				source = fmt.Sprintf("специальный (%s)", val)
+			}
+		}
+
+		if overridden, ok := req.OverriddenScores[cName]; ok {
+			scores = overridden
+			source = "переопределенный"
+		}
+
+		onPremWeighted := scores.OnPrem * prio
+		privateWeighted := scores.Private * prio
+		publicWeighted := scores.Public * prio
+
+		onPremTotal += onPremWeighted
+		privateTotal += privateWeighted
+		publicTotal += publicWeighted
+
+		detail := CriterionDetail{
+			Name:            cName,
+			Priority:        prio,
+			Source:          source,
+			OnPremScore:     scores.OnPrem,
+			PrivateScore:    scores.Private,
+			PublicScore:     scores.Public,
+			OnPremWeighted:  onPremWeighted,
+			PrivateWeighted: privateWeighted,
+			PublicWeighted:  publicWeighted,
+		}
+		details = append(details, detail)
+	}
+
+	var recommendation string
+	if onPremTotal > privateTotal && onPremTotal > publicTotal {
+		recommendation = "On-Premise"
+	} else if privateTotal > onPremTotal && privateTotal > publicTotal {
+		recommendation = "Private Cloud"
+	} else if publicTotal > onPremTotal && publicTotal > privateTotal {
+		recommendation = "Public Cloud"
+	} else {
+		equalOptions := []string{}
+		maxScore := 0
+		if onPremTotal >= maxScore {
+			maxScore = onPremTotal
+		}
+		if privateTotal >= maxScore {
+			maxScore = privateTotal
+		}
+		if publicTotal >= maxScore {
+			maxScore = publicTotal
+		}
+
+		if onPremTotal == maxScore {
+			equalOptions = append(equalOptions, "On-Premise")
+		}
+		if privateTotal == maxScore {
+			equalOptions = append(equalOptions, "Private Cloud")
+		}
+		if publicTotal == maxScore {
+			equalOptions = append(equalOptions, "Public Cloud")
+		}
+
+		if len(equalOptions) > 1 {
+			recommendation = "Требуется дополнительная оценка (" + strings.Join(equalOptions, "/") + ")"
+		} else if len(equalOptions) == 1 {
+			recommendation = equalOptions[0]
+		} else {
+			recommendation = "Требуется дополнительная оценка"
+		}
+	}
+
+	response := &RecommendationResponse{
+		OnPremTotal:    onPremTotal,
+		PrivateTotal:   privateTotal,
+		PublicTotal:    publicTotal,
+		Recommendation: recommendation,
+		Details:        details,
+	}
+
+	var detailsMsg strings.Builder
+	for _, detail := range details {
+		detailsMsg.WriteString(fmt.Sprintf("Критерий: %s\n", detail.Name))
+		detailsMsg.WriteString(fmt.Sprintf("  Приоритет: %d\n", detail.Priority))
+		detailsMsg.WriteString(fmt.Sprintf("  С учетом приоритета: OnPrem=%d, Private=%d, Public=%d\n\n",
+			detail.OnPremWeighted, detail.PrivateWeighted, detail.PublicWeighted))
+	}
+
+	aiAnalysis, err := getAISuggestions(detailsMsg.String())
+	if err == nil {
+		response.AIAnalysis = aiAnalysis
+	} else {
+		logger.Printf("Ошибка получения AI рекомендации: %v", err)
+	}
+
+	return response, nil
 }
 
 func showCriteriaButtons(bot *tgbotapi.BotAPI, chatID int64) {
