@@ -186,7 +186,7 @@ func initDB() {
 		InsecureSkipVerify: true,
 	}
 
-	conn, err := pgx.ConnectConfig(context.Background(), connConfig)
+	conn, err = pgx.ConnectConfig(context.Background(), connConfig)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Unable to connect to database: %v\n", err)
 		os.Exit(1)
