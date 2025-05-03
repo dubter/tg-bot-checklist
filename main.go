@@ -1438,7 +1438,7 @@ func getAISuggestions(details string) (string, error) {
 	client := yandexgpt.NewYandexGPTClientWithAPIKey(apiKey)
 
 	request := yandexgpt.YandexGPTRequest{
-		ModelURI: yandexgpt.MakeModelURI(folderID, yandexgpt.YandexGPT4Model32k),
+		ModelURI: yandexgpt.MakeModelURI(folderID, yandexgpt.YandexGPT4Model),
 		CompletionOptions: yandexgpt.YandexGPTCompletionOptions{
 			Stream:      false,
 			Temperature: 0.6,
