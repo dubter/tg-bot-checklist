@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	_ "github.com/lib/pq"
 
@@ -70,7 +70,7 @@ var (
 	userStates      = make(map[int64]*UserState)
 	defaultCriteria = getDefaultCriteria()
 	logger          *CustomLogger
-	conn            *pgx.Conn
+	pool            *pgxpool.Pool
 )
 
 func getDefaultCriteria() []Criterion {
@@ -167,24 +167,24 @@ func initDB() {
 		"host=%s port=%d dbname=%s user=%s password=%s sslmode=verify-full target_session_attrs=read-write",
 		host, port, dbname, user, password)
 
-	connConfig, err := pgx.ParseConfig(connString)
+	connConfig, err := pgxpool.ParseConfig(connString)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Unable to parse config: %v\n", err)
 		os.Exit(1)
 	}
 
-	connConfig.TLSConfig = &tls.Config{
+	connConfig.ConnConfig.TLSConfig = &tls.Config{
 		RootCAs:            rootCertPool,
 		InsecureSkipVerify: true,
 	}
 
-	conn, err = pgx.ConnectConfig(context.Background(), connConfig)
+	pool, err = pgxpool.NewWithConfig(context.Background(), connConfig)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Unable to connect to database: %v\n", err)
 		os.Exit(1)
 	}
 
-	err = conn.Ping(context.Background())
+	err = pool.Ping(context.Background())
 	if err != nil {
 		logger.Printf("Ошибка проверки соединения с БД: %v", err)
 		log.Fatalf("Не удалось проверить соединение с базой данных: %v", err)
@@ -203,7 +203,7 @@ func initDB() {
 		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 	);`
 
-	_, err = conn.Exec(context.Background(), createTableSQL)
+	_, err = pool.Exec(context.Background(), createTableSQL)
 	if err != nil {
 		logger.Printf("Ошибка создания таблицы 'answers': %v", err)
 		log.Fatalf("Не удалось создать таблицу 'answers': %v", err)
@@ -251,7 +251,7 @@ func main() {
 	}
 
 	initDB()
-	defer conn.Close(context.Background())
+	defer pool.Close()
 
 	go startHTTPServer()
 
@@ -394,7 +394,7 @@ func recommendHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userInputJSON, err := json.Marshal(req)
-	if err == nil && conn != nil {
+	if err == nil && pool != nil {
 		insertSQL := `INSERT INTO answers (user_id, user_input, algorithm_result, gpt_answer, equal) 
                       VALUES ($1, $2, $3, $4, $5)`
 
@@ -409,7 +409,7 @@ func recommendHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		_, err = conn.Exec(context.Background(), insertSQL,
+		_, err = pool.Exec(context.Background(), insertSQL,
 			0, // API запрос, используем 0 как идентификатор
 			userInputJSON,
 			response.Recommendation,
@@ -1249,7 +1249,7 @@ func calcAndShowResult(bot *tgbotapi.BotAPI, chatID int64) {
 	}
 
 	insertSQL := `INSERT INTO answers (user_id, user_input, algorithm_result, gpt_answer, equal) VALUES ($1, $2, $3, $4, $5)`
-	_, err = conn.Exec(context.Background(), insertSQL, chatID, userInputJSON, recommendation, aiAnalysis, equal)
+	_, err = pool.Exec(context.Background(), insertSQL, chatID, userInputJSON, recommendation, aiAnalysis, equal)
 	if err != nil {
 		logger.Printf("Ошибка сохранения результата в БД для chatID %d: %v", chatID, err)
 		sendMessage(bot, tgbotapi.NewMessage(chatID, "Произошла ошибка при сохранении результатов."))

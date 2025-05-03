@@ -11,7 +11,7 @@ docker-compose up --build   # Build + Run
 
 ```
 go build -o loadtest tests/main.go
-./loadtest -url http://localhost:8080/api/recommend -c 20 -n 200 -o results.json -v
+./loadtest -url http://localhost:8080/api/recommend -c 1 -n 200 -delay 300
 ```
 
 ### Архитектура
