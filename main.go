@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"database/sql" // Добавлен пакет для работы с SQL
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,7 +18,7 @@ import (
 	// Импортируем PostgreSQL драйвер
 	_ "github.com/lib/pq" // Обратите внимание на "_" - драйвер регистрируется, но не используется напрямую
 
-	yandexgpt "github.com/sheeiavellie/go-yandexgpt"
+	"github.com/sheeiavellie/go-yandexgpt"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -76,7 +75,7 @@ var (
 	userStates      = make(map[int64]*UserState) // key = chatID
 	defaultCriteria = getDefaultCriteria()
 	logger          *CustomLogger
-	db              *sql.DB // Глобальная переменная для подключения к БД
+	conn            *pgx.Conn
 )
 
 // Инициализация критериев
@@ -214,7 +213,7 @@ func initDB() {
 		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 	);`
 
-	_, err = db.Exec(createTableSQL)
+	_, err = conn.Exec(context.Background(), createTableSQL)
 	if err != nil {
 		logger.Printf("Ошибка создания таблицы 'answers': %v", err)
 		log.Fatalf("Не удалось создать таблицу 'answers': %v", err)
@@ -234,8 +233,8 @@ func main() {
 		log.Fatal("Переменная окружения DB_PASSWORD не установлена.")
 	}
 
-	initDB()         // Инициализируем подключение к БД
-	defer db.Close() // Закрываем подключение при завершении программы
+	initDB()                               // Инициализируем подключение к БД
+	defer conn.Close(context.Background()) // Закрываем подключение при завершении программы
 
 	bot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
@@ -1203,7 +1202,7 @@ func calcAndShowResult(bot *tgbotapi.BotAPI, chatID int64) {
 
 	// Подготовка и выполнение SQL запроса
 	insertSQL := `INSERT INTO answers (user_id, user_input, algorithm_result, gpt_answer, match) VALUES ($1, $2, $3, $4, $5)`
-	_, err = db.Exec(insertSQL, chatID, userInputJSON, recommendation, aiAnalysis, match)
+	_, err = conn.Exec(context.Background(), insertSQL, chatID, userInputJSON, recommendation, aiAnalysis, match)
 	if err != nil {
 		logger.Printf("Ошибка сохранения результата в БД для chatID %d: %v", chatID, err)
 		sendMessage(bot, tgbotapi.NewMessage(chatID, "Произошла ошибка при сохранении результатов."))
