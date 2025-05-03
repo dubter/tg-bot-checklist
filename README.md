@@ -16,7 +16,7 @@ go build -o loadtest tests/main.go
 
 ### Архитектура
 
-
+![](images/architecture.png)
 
 ### Promt Yandex GPT Pro
 ```
