@@ -15,55 +15,49 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	// Импортируем PostgreSQL драйвер
-	_ "github.com/lib/pq" // Обратите внимание на "_" - драйвер регистрируется, но не используется напрямую
+	_ "github.com/lib/pq"
 
 	"github.com/sheeiavellie/go-yandexgpt"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-// Scores хранит веса для каждого варианта развёртывания.
 type Scores struct {
-	OnPrem  int `json:"on_prem"` // Добавляем теги json для сериализации
+	OnPrem  int `json:"on_prem"`
 	Private int `json:"private"`
 	Public  int `json:"public"`
 }
 
-// Criterion описывает один критерий.
 type Criterion struct {
 	Name        string `json:"name"`
 	Category    string `json:"category"`
 	BaseScores  Scores `json:"base_scores"`
 	Description string `json:"description"`
-	IsSpecial   bool   `json:"is_special"` // если true, нужно уточнять у пользователя конкретный вариант
+	IsSpecial   bool   `json:"is_special"`
 }
 
-// UserInputData структура для хранения всех пользовательских вводов
 type UserInputData struct {
 	CriteriaPriorities map[string]int    `json:"criteria_priorities"`
 	OverriddenScores   map[string]Scores `json:"overridden_scores"`
 	SpecialValues      map[string]string `json:"special_values"`
 }
 
-// Добавим в структуру UserState поля для процесса переопределения
 type UserState struct {
 	Step               int
-	SelectedCriteria   []string          // список названий критериев, которые пользователь выбрал
-	CriteriaPriorities map[string]int    // приоритет для каждого критерия
-	OverriddenScores   map[string]Scores // переопределённые баллы
-	SpecialValues      map[string]string // выбранные «уровни» для спецкритериев
-	CurrentCriterion   string            // текущий критерий, для которого устанавливается приоритет
-	CriteriaMessageID  int               // ID сообщения с кнопками критериев
-	PriorityMessageID  int               // ID сообщения с кнопками приоритетов
-	SpecialMessageID   int               // ID сообщения с кнопками для спец. критериев
-	OverrideStep       int               // Какой вес изменяется (0 - OnPrem, 1 - Private, 2 - Public)
-	TempOverride       Scores            // Временное хранение переопределяемых весов
-	OverrideMessageID  int               // ID сообщения с кнопками переопределения
+	SelectedCriteria   []string
+	CriteriaPriorities map[string]int
+	OverriddenScores   map[string]Scores
+	SpecialValues      map[string]string
+	CurrentCriterion   string
+	CriteriaMessageID  int
+	PriorityMessageID  int
+	SpecialMessageID   int
+	OverrideStep       int
+	TempOverride       Scores
+	OverrideMessageID  int
 	CurrentOverride    string
 }
 
-// Для простоты — глобальные переменные.
 var (
 	botToken        = os.Getenv("BOT_TOKEN")
 	host            = "rc1d-7vowbk5nhczg7plw.mdb.yandexcloud.net"
@@ -72,15 +66,13 @@ var (
 	password        = os.Getenv("DB_PASSWORD")
 	dbname          = "db"
 	ca              = "/etc/ssl/certs/root.crt"
-	userStates      = make(map[int64]*UserState) // key = chatID
+	userStates      = make(map[int64]*UserState)
 	defaultCriteria = getDefaultCriteria()
 	logger          *CustomLogger
 	conn            *pgx.Conn
 )
 
-// Инициализация критериев
 func getDefaultCriteria() []Criterion {
-	// ... (остальная часть функции без изменений)
 	return []Criterion{
 		{
 			Name:        "Юрисдикция данных",
@@ -159,7 +151,6 @@ func getDefaultCriteria() []Criterion {
 	}
 }
 
-// Функция для инициализации подключения к БД
 func initDB() {
 	rootCertPool := x509.NewCertPool()
 	pem, err := os.ReadFile(ca)
@@ -192,7 +183,6 @@ func initDB() {
 		os.Exit(1)
 	}
 
-	// Проверяем соединение
 	err = conn.Ping(context.Background())
 	if err != nil {
 		logger.Printf("Ошибка проверки соединения с БД: %v", err)
@@ -201,15 +191,14 @@ func initDB() {
 
 	logger.Printf("Успешно подключено к базе данных.")
 
-	// Опционально: Создаем таблицу, если её нет
 	createTableSQL := `
 	CREATE TABLE IF NOT EXISTS answers (
 		id SERIAL PRIMARY KEY,
 		user_id BIGINT NOT NULL,
-		user_input JSONB, -- Храним всю информацию о введенных данных пользователя в JSON
+		user_input JSONB,
 		algorithm_result TEXT,
 		gpt_answer TEXT,
-		match BOOLEAN,
+		equal BOOLEAN,
 		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 	);`
 
@@ -223,9 +212,8 @@ func initDB() {
 }
 
 func main() {
-	logger = NewLogger(true) // Инициализируем логгер до БД
+	logger = NewLogger(true)
 
-	// Проверяем наличие переменных окружения
 	if botToken == "" {
 		log.Fatal("Переменная окружения BOT_TOKEN не установлена.")
 	}
@@ -233,8 +221,8 @@ func main() {
 		log.Fatal("Переменная окружения DB_PASSWORD не установлена.")
 	}
 
-	initDB()                               // Инициализируем подключение к БД
-	defer conn.Close(context.Background()) // Закрываем подключение при завершении программы
+	initDB()
+	defer conn.Close(context.Background())
 
 	bot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
@@ -242,7 +230,6 @@ func main() {
 		log.Panic(err)
 	}
 
-	// ... (остальная часть функции main без изменений)
 	bot.Debug = false
 
 	logger.Printf("Авторизован как %s", bot.Self.UserName)
@@ -262,7 +249,6 @@ func main() {
 				"От":      update.Message.From.UserName,
 			})
 
-			// Инициализируем состояние пользователя, если нужно
 			if userStates[chatID] == nil {
 				userStates[chatID] = &UserState{
 					Step:               0,
@@ -296,15 +282,11 @@ func main() {
 				sendMessage(bot, msg)
 				showCriteriaButtons(bot, chatID)
 			} else if state := userStates[chatID]; state.Step == 5 {
-				// Обработка ввода переопределенных баллов - Эта логика устарела с введением кнопок
-				// processScoreOverride(bot, chatID, text)
-				// Нужно сообщить пользователю, что ввод текста больше не поддерживается
 				msg := tgbotapi.NewMessage(chatID, "Пожалуйста, используйте кнопки для переопределения весов.")
 				sendMessage(bot, msg)
-				showOverrideCriteriaList(bot, chatID) // Показать кнопки снова
+				showOverrideCriteriaList(bot, chatID)
 			}
 		} else if update.CallbackQuery != nil {
-			// Обрабатываем нажатия на кнопки
 			chatID := update.CallbackQuery.Message.Chat.ID
 
 			logCallbackQuery(update.CallbackQuery)
@@ -315,13 +297,11 @@ func main() {
 				logger.Printf("Ошибка при ответе на callback: %v", err)
 			}
 
-			// Проверяем наличие state перед использованием
 			if userStates[chatID] == nil {
 				logger.Printf("Состояние пользователя для chatID %d не найдено!", chatID)
-				// Можно отправить сообщение об ошибке или сбросить состояние
 				msg := tgbotapi.NewMessage(chatID, "Произошла ошибка состояния. Пожалуйста, начните заново с /start.")
 				sendMessage(bot, msg)
-				continue // Переходим к следующему update
+				continue
 			}
 
 			handleCallbackQuery(bot, update.CallbackQuery, chatID)
@@ -329,12 +309,10 @@ func main() {
 	}
 }
 
-// Показывает список критериев в виде кнопок
 func showCriteriaButtons(bot *tgbotapi.BotAPI, chatID int64) {
 	state := userStates[chatID]
 	var keyboardRows [][]tgbotapi.InlineKeyboardButton
 
-	// Добавляем все критерии без группировки по категориям
 	for _, crit := range defaultCriteria {
 		isSelected := contains(state.SelectedCriteria, crit.Name)
 
@@ -350,15 +328,12 @@ func showCriteriaButtons(bot *tgbotapi.BotAPI, chatID int64) {
 		})
 	}
 
-	// Добавляем кнопку "Готово"
 	keyboardRows = append(keyboardRows, []tgbotapi.InlineKeyboardButton{
 		tgbotapi.NewInlineKeyboardButtonData("✅ Готово", "done_criteria"),
 	})
 
-	// Создаем клавиатуру
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(keyboardRows...)
 
-	// Если у нас уже есть ID сообщения с кнопками, обновляем его
 	if state.CriteriaMessageID != 0 {
 		editMsg := tgbotapi.NewEditMessageReplyMarkup(
 			chatID,
@@ -369,7 +344,6 @@ func showCriteriaButtons(bot *tgbotapi.BotAPI, chatID int64) {
 			logger.Printf("Ошибка обновления сообщения: %v", err)
 		}
 	} else {
-		// Иначе отправляем новое сообщение
 		msg := tgbotapi.NewMessage(chatID, "Выберите критерии, которые важны для вашей компании:")
 		msg.ReplyMarkup = keyboard
 
@@ -382,15 +356,14 @@ func showCriteriaButtons(bot *tgbotapi.BotAPI, chatID int64) {
 	}
 }
 
-// Эту функцию нужно добавить для преобразования callback в значения
 func getSpecialValueFromCallback(callbackPrefix string, index int) string {
 	switch callbackPrefix {
-	case "sdata": // Объём данных
+	case "sdata":
 		options := []string{"Малый", "Средний", "Большой"}
 		if index >= 0 && index < len(options) {
 			return options[index]
 		}
-	case "susage": // Срок использования
+	case "susage":
 		options := []string{"Краткосрочный", "Долгосрочный"}
 		if index >= 0 && index < len(options) {
 			return options[index]
@@ -404,7 +377,6 @@ func getSpecialValueFromCallback(callbackPrefix string, index int) string {
 	return ""
 }
 
-// Функция, возвращающая критерий по префиксу
 func getSpecialCriterionName(callbackPrefix string) string {
 	switch callbackPrefix {
 	case "sdata":
@@ -412,17 +384,15 @@ func getSpecialCriterionName(callbackPrefix string) string {
 	case "susage":
 		return "Срок использования"
 	case "sother":
-		return "Другой критерий" // замените на нужное, если добавите другие критерии
+		return "Другой критерий"
 	}
 	return ""
 }
 
-// Обрабатывает нажатия на кнопки
 func handleCallbackQuery(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, chatID int64) {
 	state := userStates[chatID]
 	callbackData := query.Data
 
-	// Обработка специальных критериев с новым форматом
 	if strings.HasPrefix(callbackData, "sdata_") ||
 		strings.HasPrefix(callbackData, "susage_") ||
 		strings.HasPrefix(callbackData, "sother_") {
@@ -444,7 +414,6 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, ch
 						"Значение": value,
 					})
 
-					// Проверяем, все ли спец. значения установлены
 					allSpecialSet := true
 					for _, critName := range state.SelectedCriteria {
 						crit := findCriterionByName(critName)
@@ -467,12 +436,9 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, ch
 	}
 
 	if strings.HasPrefix(callbackData, "crit_") {
-		// Выбор/отмена выбора критерия
 		criterionName := strings.TrimPrefix(callbackData, "crit_")
 
-		// Переключаем состояние выбора
 		if contains(state.SelectedCriteria, criterionName) {
-			// Удаляем критерий из выбранных
 			for i, name := range state.SelectedCriteria {
 				if name == criterionName {
 					state.SelectedCriteria = append(state.SelectedCriteria[:i], state.SelectedCriteria[i+1:]...)
@@ -483,17 +449,14 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, ch
 				"Критерий": criterionName,
 			})
 		} else {
-			// Добавляем критерий к выбранным
 			state.SelectedCriteria = append(state.SelectedCriteria, criterionName)
 			logger.LogTelegramAction("Критерий выбран", map[string]interface{}{
 				"Критерий": criterionName,
 			})
 		}
 
-		// Обновляем сообщение с кнопками критериев
 		showCriteriaButtons(bot, chatID)
 	} else if callbackData == "done_criteria" {
-		// Пользователь закончил выбор критериев
 		if len(state.SelectedCriteria) == 0 {
 			msg := tgbotapi.NewMessage(chatID, "Пожалуйста, выберите хотя бы один критерий.")
 			sendMessage(bot, msg)
@@ -507,7 +470,6 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, ch
 			startPrioritySelection(bot, chatID)
 		}
 	} else if strings.HasPrefix(callbackData, "prio_") {
-		// Выбор приоритета для критерия
 		parts := strings.Split(callbackData, "_")
 		if len(parts) == 3 {
 			criterionName := parts[1]
@@ -519,9 +481,7 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, ch
 				"Приоритет": priority,
 			})
 
-			// Проверяем, все ли приоритеты установлены
 			if len(state.CriteriaPriorities) == len(state.SelectedCriteria) {
-				// Проверяем, есть ли спец. критерии
 				hasSpecialCriteria := false
 				for _, critName := range state.SelectedCriteria {
 					crit := findCriterionByName(critName)
@@ -539,12 +499,10 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, ch
 					askOverride(bot, chatID)
 				}
 			} else {
-				// Если не все приоритеты установлены, показываем следующий
 				startPrioritySelection(bot, chatID)
 			}
 		}
 	} else if strings.HasPrefix(callbackData, "special_") {
-		// Выбор значения для специального критерия
 		parts := strings.Split(callbackData, "_")
 		if len(parts) == 3 {
 			criterionName := parts[1]
@@ -556,7 +514,6 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, ch
 				"Значение": value,
 			})
 
-			// Проверяем, все ли спец. значения установлены
 			allSpecialSet := true
 			for _, critName := range state.SelectedCriteria {
 				crit := findCriterionByName(critName)
@@ -576,27 +533,21 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, ch
 	}
 
 	if callbackData == "override_yes" {
-		// Вместо прямого перехода в состояние ввода текста, показываем список критериев
 		showOverrideCriteriaList(bot, chatID)
 	} else if strings.HasPrefix(callbackData, "override_select_") {
-		// Выбран критерий для переопределения
 		criterionName := strings.TrimPrefix(callbackData, "override_select_")
 		showCriterionOverrideOptions(bot, chatID, criterionName)
 	} else if callbackData == "override_done" {
-		// Пользователь закончил переопределение весов
 		state.Step = 6
 		calcAndShowResult(bot, chatID)
 	} else if callbackData == "override_cancel" {
-		// Отмена переопределения текущего критерия
 		showOverrideCriteriaList(bot, chatID)
 	} else if strings.HasPrefix(callbackData, "weight_") {
-		// Обработка выбора веса
 		parts := strings.Split(callbackData, "_")
 		if len(parts) == 3 {
 			step, _ := strconv.Atoi(parts[1])
 			value, _ := strconv.Atoi(parts[2])
 
-			// Обновляем временное значение
 			switch step {
 			case 0:
 				state.TempOverride.OnPrem = value
@@ -606,12 +557,10 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, ch
 				state.TempOverride.Public = value
 			}
 
-			// Переходим к следующему шагу или сохраняем и возвращаемся к списку
 			if step < 2 {
 				state.OverrideStep++
 				showWeightOptions(bot, chatID, state.CurrentOverride)
 			} else {
-				// Сохраняем финальные значения
 				state.OverriddenScores[state.CurrentOverride] = state.TempOverride
 
 				logger.LogTelegramAction("Баллы переопределены", map[string]interface{}{
@@ -621,23 +570,19 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, ch
 					"Public":   state.TempOverride.Public,
 				})
 
-				// Возвращаемся к списку критериев
 				showOverrideCriteriaList(bot, chatID)
 			}
 		}
 	} else if callbackData == "override_no" {
-		// Пользователь не хочет переопределять баллы
 		state.Step = 6
 		logger.LogTelegramAction("Отказ от переопределения баллов", nil)
 		calcAndShowResult(bot, chatID)
 	}
 }
 
-// Начинает процесс выбора приоритетов
 func startPrioritySelection(bot *tgbotapi.BotAPI, chatID int64) {
 	state := userStates[chatID]
 
-	// Находим критерий, для которого еще не установлен приоритет
 	var criterionToRate string
 	for _, critName := range state.SelectedCriteria {
 		if _, ok := state.CriteriaPriorities[critName]; !ok {
@@ -647,14 +592,11 @@ func startPrioritySelection(bot *tgbotapi.BotAPI, chatID int64) {
 	}
 
 	if criterionToRate == "" {
-		// Все приоритеты установлены
 		return
 	}
 
-	// Находим описание критерия
 	crit := findCriterionByName(criterionToRate)
 
-	// Формируем сообщение
 	text := fmt.Sprintf("Установите приоритет для критерия:\n\n*%s*\n%s",
 		criterionToRate, crit.Description)
 
@@ -671,7 +613,6 @@ func startPrioritySelection(bot *tgbotapi.BotAPI, chatID int64) {
 		"Критерий": criterionToRate,
 	})
 
-	// Если уже есть сообщение с приоритетами, обновляем его
 	if state.PriorityMessageID != 0 {
 		editMsg := tgbotapi.NewEditMessageTextAndMarkup(
 			chatID,
@@ -685,7 +626,6 @@ func startPrioritySelection(bot *tgbotapi.BotAPI, chatID int64) {
 			logger.Printf("Ошибка обновления сообщения приоритета: %v", err)
 		}
 	} else {
-		// Иначе отправляем новое сообщение
 		msg := tgbotapi.NewMessage(chatID, text)
 		msg.ParseMode = "Markdown"
 		msg.ReplyMarkup = keyboard
@@ -699,11 +639,9 @@ func startPrioritySelection(bot *tgbotapi.BotAPI, chatID int64) {
 	}
 }
 
-// Показывает варианты для специальных критериев
 func showSpecialCriteriaOptions(bot *tgbotapi.BotAPI, chatID int64) {
 	state := userStates[chatID]
 
-	// Находим первый необработанный спец. критерий
 	var criterionToSpecify string
 	for _, critName := range state.SelectedCriteria {
 		crit := findCriterionByName(critName)
@@ -723,19 +661,18 @@ func showSpecialCriteriaOptions(bot *tgbotapi.BotAPI, chatID int64) {
 
 	if criterionToSpecify == "Объём данных" {
 		options = []string{"Малый", "Средний", "Большой"}
-		callbackPrefix = "sdata" // Сокращение от "special_data"
+		callbackPrefix = "sdata"
 		msgText = "Укажите объем данных:\n\n" +
 			"• *Малый* — до 100 ГБ данных (несколько таблиц, тысячи-миллионы записей)\n" +
 			"• *Средний* — от 100 ГБ до 1 ТБ (множество таблиц, миллионы-миллиарды записей)\n" +
 			"• *Большой* — более 1 ТБ (сложная структура, миллиарды записей и выше)"
 	} else if criterionToSpecify == "Срок использования" {
 		options = []string{"Краткосрочный", "Долгосрочный"}
-		callbackPrefix = "susage" // Сокращение от "special_usage"
+		callbackPrefix = "susage"
 		msgText = "Укажите планируемый срок использования:\n\n" +
 			"• *Краткосрочный* — до 1-2 лет (временные проекты, эксперименты)\n" +
 			"• *Долгосрочный* — от 3 лет и более (постоянные, долгосрочные системы)"
 	} else {
-		// Для других спец. критериев
 		options = []string{"Опция 1", "Опция 2", "Опция 3"}
 		callbackPrefix = "sother"
 		msgText = fmt.Sprintf("Укажите значение для '%s':", criterionToSpecify)
@@ -746,10 +683,8 @@ func showSpecialCriteriaOptions(bot *tgbotapi.BotAPI, chatID int64) {
 		"Опции":    options,
 	})
 
-	// Создаем кнопки для каждого варианта с короткими callback_data
 	var keyboardRows [][]tgbotapi.InlineKeyboardButton
 	for i, option := range options {
-		// Используем индекс для callback_data вместо полного текста
 		callbackData := fmt.Sprintf("%s_%d", callbackPrefix, i)
 
 		keyboardRows = append(keyboardRows, []tgbotapi.InlineKeyboardButton{
@@ -757,16 +692,14 @@ func showSpecialCriteriaOptions(bot *tgbotapi.BotAPI, chatID int64) {
 		})
 	}
 
-	// Создаем клавиатуру
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(keyboardRows...)
 
-	// Сохраняем или обновляем сообщение
 	if state.SpecialMessageID != 0 {
 		editMsg := tgbotapi.NewEditMessageTextAndMarkup(
 			chatID,
 			state.SpecialMessageID,
 			msgText,
-			keyboard, // Напрямую передаем созданную клавиатуру
+			keyboard,
 		)
 		editMsg.ParseMode = "Markdown"
 
@@ -792,12 +725,10 @@ func showOverrideCriteriaList(bot *tgbotapi.BotAPI, chatID int64) {
 	state := userStates[chatID]
 	var keyboardRows [][]tgbotapi.InlineKeyboardButton
 
-	// Добавляем выбранные критерии
 	for _, critName := range state.SelectedCriteria {
-		// Показываем статус (переопределено или нет)
 		buttonText := critName
 		if _, ok := state.OverriddenScores[critName]; ok {
-			buttonText = "✓ " + buttonText // Уже переопределено
+			buttonText = "✓ " + buttonText
 		}
 
 		keyboardRows = append(keyboardRows, []tgbotapi.InlineKeyboardButton{
@@ -805,7 +736,6 @@ func showOverrideCriteriaList(bot *tgbotapi.BotAPI, chatID int64) {
 		})
 	}
 
-	// Добавляем кнопку "Готово"
 	keyboardRows = append(keyboardRows, []tgbotapi.InlineKeyboardButton{
 		tgbotapi.NewInlineKeyboardButtonData("✅ Готово", "override_done"),
 	})
@@ -821,29 +751,23 @@ func showOverrideCriteriaList(bot *tgbotapi.BotAPI, chatID int64) {
 	}
 }
 
-// Показывает текущие веса критерия и кнопки для их изменения
 func showCriterionOverrideOptions(bot *tgbotapi.BotAPI, chatID int64, criterionName string) {
 	state := userStates[chatID]
 
-	// Получаем текущие веса
 	crit := findCriterionByName(criterionName)
 	scores := crit.BaseScores
 
-	// Если есть переопределенные веса, используем их
 	if overridden, ok := state.OverriddenScores[criterionName]; ok {
 		scores = overridden
 	}
 
-	// Создаем временную копию для изменения
 	state.TempOverride = scores
 	state.CurrentOverride = criterionName
-	state.OverrideStep = 0 // Начинаем с OnPrem
+	state.OverrideStep = 0
 
-	// Отображаем текущие веса и запрашиваем изменение для OnPrem
 	showWeightOptions(bot, chatID, criterionName)
 }
 
-// Показывает опции для изменения конкретного веса
 func showWeightOptions(bot *tgbotapi.BotAPI, chatID int64, criterionName string) {
 	state := userStates[chatID]
 
@@ -862,7 +786,6 @@ func showWeightOptions(bot *tgbotapi.BotAPI, chatID int64, criterionName string)
 		currentValue = state.TempOverride.Public
 	}
 
-	// Формируем красивое сообщение с текущими весами
 	msgText := fmt.Sprintf("Изменение весов для критерия *%s*\n\n", criterionName)
 	msgText += fmt.Sprintf("*Текущие веса:*\n")
 	msgText += fmt.Sprintf("• On-Premise: %d\n", state.TempOverride.OnPrem)
@@ -871,34 +794,30 @@ func showWeightOptions(bot *tgbotapi.BotAPI, chatID int64, criterionName string)
 
 	msgText += fmt.Sprintf("Выберите новое значение для *%s*:", deploymentType)
 
-	// Создаем кнопки от 1 до 10
 	var rows [][]tgbotapi.InlineKeyboardButton
 	var row []tgbotapi.InlineKeyboardButton
 
 	for i := 1; i <= 10; i++ {
 		buttonText := fmt.Sprintf("%d", i)
 		if i == currentValue {
-			buttonText = "• " + buttonText + " •" // Отмечаем текущее значение
+			buttonText = "• " + buttonText + " •"
 		}
 
 		callbackData := fmt.Sprintf("weight_%d_%d", state.OverrideStep, i)
 		row = append(row, tgbotapi.NewInlineKeyboardButtonData(buttonText, callbackData))
 
-		// По 5 кнопок в ряду
 		if i%5 == 0 || i == 10 {
 			rows = append(rows, row)
 			row = []tgbotapi.InlineKeyboardButton{}
 		}
 	}
 
-	// Добавляем кнопку Отмена
 	rows = append(rows, []tgbotapi.InlineKeyboardButton{
 		tgbotapi.NewInlineKeyboardButtonData("❌ Отмена", "override_cancel"),
 	})
 
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
 
-	// Если уже есть сообщение для переопределения, обновляем его
 	if state.OverrideMessageID != 0 {
 		editMsg := tgbotapi.NewEditMessageTextAndMarkup(
 			chatID,
@@ -923,7 +842,6 @@ func showWeightOptions(bot *tgbotapi.BotAPI, chatID int64, criterionName string)
 	}
 }
 
-// Спрашивает, хочет ли пользователь переопределять баллы
 func askOverride(bot *tgbotapi.BotAPI, chatID int64) {
 	msg := tgbotapi.NewMessage(chatID, "Хотите ли переопределить базовые баллы (веса) для выбранных критериев?")
 
@@ -942,7 +860,6 @@ func askOverride(bot *tgbotapi.BotAPI, chatID int64) {
 func processScoreOverride(bot *tgbotapi.BotAPI, chatID int64, text string) {
 	state := userStates[chatID]
 
-	// Удаляем возможные обратные кавычки и прочие спецсимволы
 	text = strings.ReplaceAll(text, "`", "")
 
 	logger.LogTelegramAction("Получены переопределенные баллы", map[string]interface{}{
@@ -951,10 +868,8 @@ func processScoreOverride(bot *tgbotapi.BotAPI, chatID int64, text string) {
 
 	successfulOverrides := 0
 
-	// Разбираем ввод на части
 	parts := strings.Split(text, "=")
 	if len(parts) == 2 {
-		// Обрабатываем одиночный ввод без запятых
 		name := strings.TrimSpace(parts[0])
 		scoresText := strings.TrimSpace(parts[1])
 		scoresArr := strings.Split(scoresText, ",")
@@ -965,7 +880,6 @@ func processScoreOverride(bot *tgbotapi.BotAPI, chatID int64, text string) {
 			publicVal, err3 := strconv.Atoi(strings.TrimSpace(scoresArr[2]))
 
 			if err1 == nil && err2 == nil && err3 == nil {
-				// Для нечувствительного к регистру поиска критерия
 				foundCriteria := false
 				for _, crit := range defaultCriteria {
 					if strings.EqualFold(crit.Name, name) {
@@ -999,7 +913,6 @@ func processScoreOverride(bot *tgbotapi.BotAPI, chatID int64, text string) {
 				return
 			}
 		} else {
-			// Обработка стандартного ввода с запятыми между парами критерий=баллы
 			pairs := strings.Split(text, ",")
 			for _, p := range pairs {
 				p = strings.TrimSpace(p)
@@ -1007,9 +920,6 @@ func processScoreOverride(bot *tgbotapi.BotAPI, chatID int64, text string) {
 				if len(pairParts) != 2 {
 					continue
 				}
-
-				// ... [существующий код обработки пар]
-				// Аналогично добавить чувствительность к регистру и логирование
 			}
 		}
 	}
@@ -1024,18 +934,16 @@ func processScoreOverride(bot *tgbotapi.BotAPI, chatID int64, text string) {
 	calcAndShowResult(bot, chatID)
 }
 
-// Собственно подсчёт результатов и сохранение в БД
 func calcAndShowResult(bot *tgbotapi.BotAPI, chatID int64) {
 	state := userStates[chatID]
 	if state == nil {
 		logger.Printf("Критическая ошибка: state = nil в calcAndShowResult для chatID %d", chatID)
-		return // Не можем продолжать без состояния
+		return
 	}
 	onPremTotal := 0
 	privateTotal := 0
 	publicTotal := 0
 
-	// Формируем подробный отчет
 	var detailsMsg strings.Builder
 	detailsMsg.WriteString("Детализация расчета:\n\n")
 
@@ -1047,50 +955,42 @@ func calcAndShowResult(bot *tgbotapi.BotAPI, chatID int64) {
 		"Спец. значения":    state.SpecialValues,
 	})
 
-	// Собираем все введенные пользователем данные
 	userInput := UserInputData{
 		CriteriaPriorities: state.CriteriaPriorities,
 		OverriddenScores:   state.OverriddenScores,
 		SpecialValues:      state.SpecialValues,
 	}
 
-	// Проходим по выбранным критериям
 	for _, cName := range state.SelectedCriteria {
 		crit := findCriterionByName(cName)
 		prio, prioOk := state.CriteriaPriorities[cName]
 		if !prioOk {
 			logger.Printf("Внимание: не найден приоритет для критерия '%s' у пользователя %d. Используется 1.", cName, chatID)
-			prio = 1 // Дефолтный приоритет, если что-то пошло не так
+			prio = 1
 		}
 
-		// Получаем базовые или переопределённые баллы
 		scores := crit.BaseScores
 		source := "базовый"
 
-		// Если критерий специальный, то подставляем баллы
 		if crit.IsSpecial {
 			val, valOk := state.SpecialValues[cName]
 			if !valOk {
 				logger.Printf("Внимание: не найдено специальное значение для критерия '%s' у пользователя %d. Используются дефолтные баллы.", cName, chatID)
-				// Не меняем scores, останутся базовые нули или последние переопределенные
 			} else {
 				scores = getScoresForSpecialCriterion(crit.Name, val)
 				source = fmt.Sprintf("специальный (%s)", val)
 			}
 		}
 
-		// Если есть переопределенные баллы, то берем их
 		if overridden, ok := state.OverriddenScores[cName]; ok {
 			scores = overridden
 			source = "переопределенный"
 		}
 
-		// Подсчитываем общие баллы
 		onPremTotal += scores.OnPrem * prio
 		privateTotal += scores.Private * prio
 		publicTotal += scores.Public * prio
 
-		// Добавляем в детализацию
 		detailsMsg.WriteString(fmt.Sprintf("Критерий: %s\n", cName))
 		detailsMsg.WriteString(fmt.Sprintf("  Приоритет: %d\n", prio))
 		detailsMsg.WriteString(fmt.Sprintf("  Баллы (%s): OnPrem=%d, Private=%d, Public=%d\n",
@@ -1099,7 +999,6 @@ func calcAndShowResult(bot *tgbotapi.BotAPI, chatID int64) {
 			scores.OnPrem*prio, scores.Private*prio, scores.Public*prio))
 	}
 
-	// Определяем победителя
 	resultMsg := fmt.Sprintf(
 		"Итоговые баллы:\nOn-Premise: %d\nPrivate Cloud: %d\nPublic Cloud: %d\n\n",
 		onPremTotal, privateTotal, publicTotal,
@@ -1116,7 +1015,6 @@ func calcAndShowResult(bot *tgbotapi.BotAPI, chatID int64) {
 		recommendation = "Public Cloud"
 		resultMsg += "Рекомендуется Public Cloud."
 	} else {
-		// Обработка равенства баллов
 		equalOptions := []string{}
 		maxScore := 0
 		if onPremTotal >= maxScore {
@@ -1143,7 +1041,6 @@ func calcAndShowResult(bot *tgbotapi.BotAPI, chatID int64) {
 			recommendation = "Требуется дополнительная оценка (" + strings.Join(equalOptions, "/") + ")"
 			resultMsg += "Варианты (" + strings.Join(equalOptions, ", ") + ") равны по баллам, нужна дополнительная оценка."
 		} else {
-			// Эта ветка не должна выполниться при текущей логике, но на всякий случай
 			recommendation = "Требуется дополнительная оценка"
 			resultMsg += "Не удалось однозначно определить лучший вариант, нужна дополнительная оценка."
 		}
@@ -1157,52 +1054,40 @@ func calcAndShowResult(bot *tgbotapi.BotAPI, chatID int64) {
 		"Рекомендуется": recommendation,
 	})
 
-	// Отправляем результат
 	sendMessage(bot, tgbotapi.NewMessage(chatID, resultMsg))
 
-	// Отправляем детализацию
 	sendMessage(bot, tgbotapi.NewMessage(chatID, detailsMsg.String()))
 
-	// --- Получение рекомендации AI ---
-	aiAnalysis := "" // Инициализируем пустой строкой
+	aiAnalysis := ""
 	var aiErr error
-	filteredDetails := filterString(detailsMsg.String(), "Баллы", "С учетом приоритета:") // Фильтруем для LLM
-	aiAnalysis, aiErr = getAISuggestions(filteredDetails)                                 // Передаем отфильтрованные детали
+	filteredDetails := filterString(detailsMsg.String(), "Баллы", "С учетом приоритета:")
+	aiAnalysis, aiErr = getAISuggestions(filteredDetails)
 	if aiErr != nil {
 		logger.Printf("Ошибка получения анализа AI для chatID %d: %v", chatID, aiErr)
 		sendMessage(bot, tgbotapi.NewMessage(chatID, "Не удалось получить рекомендацию от AI."))
-		// Не прерываем выполнение, сохраним без AI ответа или с пустым полем
 	} else {
-		// При успешном получении анализа
-		msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("*Рекомендация AI*:\n%s", aiAnalysis)) // Добавил перенос строки для читаемости
+		msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("*Рекомендация AI*:\n%s", aiAnalysis))
 		msg.ParseMode = "Markdown"
 		sendMessage(bot, msg)
 	}
 
-	// --- Сохранение в базу данных ---
-	match := false
-	// Простая проверка совпадения (можно усложнить при необходимости)
-	// Ищем название рекомендованного варианта (без доп. текста) в ответе AI
-	simpleRecommendation := strings.Split(recommendation, " ")[0] // Берем первое слово ("On-Premise", "Private", "Public")
+	equal := false
+	simpleRecommendation := strings.Split(recommendation, " ")[0]
 	if strings.Contains(strings.ToLower(aiAnalysis), strings.ToLower(simpleRecommendation)) {
-		match = true
+		equal = true
 	}
-	// Если алгоритм не дал однозначного ответа, считаем несовпадением
 	if strings.HasPrefix(recommendation, "Требуется") {
-		match = false
+		equal = false
 	}
 
-	// Сериализуем пользовательский ввод в JSON
 	userInputJSON, err := json.Marshal(userInput)
 	if err != nil {
 		logger.Printf("Ошибка сериализации userInput в JSON для chatID %d: %v", chatID, err)
-		// Продолжаем без сохранения или сохраняем с NULL? Решаем сохранить без userInput.
-		userInputJSON = []byte("null") // Или пустой объект {} ? Лучше null, чтобы показать ошибку
+		userInputJSON = []byte("null")
 	}
 
-	// Подготовка и выполнение SQL запроса
-	insertSQL := `INSERT INTO answers (user_id, user_input, algorithm_result, gpt_answer, match) VALUES ($1, $2, $3, $4, $5)`
-	_, err = conn.Exec(context.Background(), insertSQL, chatID, userInputJSON, recommendation, aiAnalysis, match)
+	insertSQL := `INSERT INTO answers (user_id, user_input, algorithm_result, gpt_answer, equal) VALUES ($1, $2, $3, $4, $5)`
+	_, err = conn.Exec(context.Background(), insertSQL, chatID, userInputJSON, recommendation, aiAnalysis, equal)
 	if err != nil {
 		logger.Printf("Ошибка сохранения результата в БД для chatID %d: %v", chatID, err)
 		sendMessage(bot, tgbotapi.NewMessage(chatID, "Произошла ошибка при сохранении результатов."))
@@ -1211,37 +1096,27 @@ func calcAndShowResult(bot *tgbotapi.BotAPI, chatID int64) {
 			"ChatID":           chatID,
 			"AlgorithmResult":  recommendation,
 			"GPTAnswerPresent": aiAnalysis != "",
-			"Match":            match,
+			"Equal":            equal,
 		})
 	}
-	// --- Конец сохранения в базу данных ---
 
-	// Предлагаем начать заново
 	msg := tgbotapi.NewMessage(chatID, "Чтобы начать новый чеклист, введите /start")
 	sendMessage(bot, msg)
 
-	// Очищаем состояние пользователя после завершения
 	delete(userStates, chatID)
 	logger.Printf("Состояние пользователя для chatID %d очищено.", chatID)
 }
 
-// ... (функции findCriterionByName, getScoresForSpecialCriterion, contains, CustomLogger, NewLogger, Printf, LogTelegramAction, sendMessage, editMessageText, editMessageReplyMarkup, logCallbackQuery, getAISuggestions, descriptionLLM, filterString - без изменений)
-
-// --- Вспомогательные функции (без изменений) ---
-
-// Функция возвращает критерий по названию
 func findCriterionByName(name string) Criterion {
 	for _, c := range defaultCriteria {
 		if c.Name == name {
 			return c
 		}
 	}
-	// Возвращаем пустой Criterion, если не найден (нужно обрабатывать в вызывающем коде)
 	logger.Printf("Внимание: Критерий с именем '%s' не найден в defaultCriteria.", name)
 	return Criterion{}
 }
 
-// Функция для расчёта баллов спецкритериев
 func getScoresForSpecialCriterion(name, userValue string) Scores {
 	switch name {
 	case "Объём данных":
@@ -1255,7 +1130,7 @@ func getScoresForSpecialCriterion(name, userValue string) Scores {
 			return Scores{OnPrem: 4, Private: 8, Public: 9}
 		default:
 			logger.Printf("Неизвестное значение '%s' для спец. критерия '%s'. Возвращены дефолтные баллы.", userValue, name)
-			return Scores{OnPrem: 5, Private: 5, Public: 5} // Дефолтные баллы при неизвестном значении
+			return Scores{OnPrem: 5, Private: 5, Public: 5}
 		}
 	case "Срок использования":
 		lower := strings.ToLower(userValue)
@@ -1266,16 +1141,14 @@ func getScoresForSpecialCriterion(name, userValue string) Scores {
 			return Scores{OnPrem: 9, Private: 7, Public: 6}
 		default:
 			logger.Printf("Неизвестное значение '%s' для спец. критерия '%s'. Возвращены дефолтные баллы.", userValue, name)
-			return Scores{OnPrem: 5, Private: 5, Public: 5} // Дефолтные баллы при неизвестном значении
+			return Scores{OnPrem: 5, Private: 5, Public: 5}
 		}
-		// Добавьте сюда логику для других IsSpecial критериев, если они появятся
 	default:
 		logger.Printf("Попытка получить баллы для неизвестного спец. критерия '%s'.", name)
-		return Scores{OnPrem: 0, Private: 0, Public: 0} // Нулевые баллы для неизвестного критерия
+		return Scores{OnPrem: 0, Private: 0, Public: 0}
 	}
 }
 
-// Вспомогательная функция для проверки, содержится ли элемент в срезе
 func contains(arr []string, val string) bool {
 	for _, v := range arr {
 		if v == val {
@@ -1285,7 +1158,6 @@ func contains(arr []string, val string) bool {
 	return false
 }
 
-// --- Логирование и обертки для Telegram API (без изменений) ---
 type CustomLogger struct {
 	debug bool
 	out   io.Writer
@@ -1302,7 +1174,7 @@ func (l *CustomLogger) Printf(format string, v ...interface{}) {
 	if !l.debug {
 		return
 	}
-	timestamp := time.Now().Format("15:04:05.000") // Добавил миллисекунды для точности
+	timestamp := time.Now().Format("15:04:05.000")
 	fmt.Fprintf(l.out, "[%s] ", timestamp)
 	fmt.Fprintf(l.out, format+"\n", v...)
 }
@@ -1313,14 +1185,12 @@ func (l *CustomLogger) LogTelegramAction(action string, msg interface{}) {
 	}
 	timestamp := time.Now().Format("15:04:05.000")
 
-	// Проверяем, что msg не nil перед маршалингом
 	var jsonData []byte
 	var err error
 	if msg != nil {
 		jsonData, err = json.MarshalIndent(msg, "", "  ")
 		if err != nil {
 			l.Printf("[%s] Ошибка логирования (маршалинг JSON): %v. Данные: %+v", timestamp, err, msg)
-			// Выводим хотя бы базовую информацию, если JSON не удался
 			fmt.Fprintf(l.out, "[%s] === %s ===\n%+v\n\n", timestamp, action, msg)
 			return
 		}
@@ -1334,7 +1204,7 @@ func (l *CustomLogger) LogTelegramAction(action string, msg interface{}) {
 func sendMessage(bot *tgbotapi.BotAPI, msg tgbotapi.MessageConfig) (tgbotapi.Message, error) {
 	logger.LogTelegramAction("Отправка сообщения", map[string]interface{}{
 		"ChatID":      msg.ChatID,
-		"Text":        msg.Text, // Обрезаем длинный текст для лога, если нужно
+		"Text":        msg.Text,
 		"ParseMode":   msg.ParseMode,
 		"HasKeyboard": msg.ReplyMarkup != nil,
 	})
@@ -1349,7 +1219,7 @@ func editMessageText(bot *tgbotapi.BotAPI, msg tgbotapi.EditMessageTextConfig) (
 	logger.LogTelegramAction("Редактирование текста сообщения", map[string]interface{}{
 		"ChatID":    msg.ChatID,
 		"MessageID": msg.MessageID,
-		"Text":      msg.Text, // Обрезаем длинный текст для лога, если нужно
+		"Text":      msg.Text,
 		"ParseMode": msg.ParseMode,
 	})
 	sentMsg, err := bot.Send(msg)
@@ -1363,7 +1233,6 @@ func editMessageReplyMarkup(bot *tgbotapi.BotAPI, msg tgbotapi.EditMessageReplyM
 	logger.LogTelegramAction("Обновление кнопок сообщения", map[string]interface{}{
 		"ChatID":    msg.ChatID,
 		"MessageID": msg.MessageID,
-		// Не логгируем сами кнопки, чтобы не засорять лог
 	})
 	sentMsg, err := bot.Send(msg)
 	if err != nil {
@@ -1373,7 +1242,6 @@ func editMessageReplyMarkup(bot *tgbotapi.BotAPI, msg tgbotapi.EditMessageReplyM
 }
 
 func logCallbackQuery(query *tgbotapi.CallbackQuery) {
-	// Проверяем, что query и query.Message не nil
 	if query == nil {
 		logger.Printf("Ошибка: получен nil CallbackQuery")
 		return
@@ -1393,38 +1261,35 @@ func logCallbackQuery(query *tgbotapi.CallbackQuery) {
 		"ChatID":     chatID,
 		"MessageID":  messageID,
 		"Data":       query.Data,
-		"InlineMID":  query.InlineMessageID, // Добавлено для inline-режима, если используется
+		"InlineMID":  query.InlineMessageID,
 	})
 }
 
-// --- Взаимодействие с Yandex GPT (без изменений) ---
 func getAISuggestions(details string) (string, error) {
-	// Используйте актуальный способ получения ключа/IAM-токена
-	apiKey := os.Getenv("YANDEX_API_KEY") // или IAM-токен
+	apiKey := os.Getenv("YANDEX_API_KEY")
 	folderID := os.Getenv("YANDEX_FOLDER_ID")
 
 	if apiKey == "" || folderID == "" {
 		return "", fmt.Errorf("Yandex API Key или Folder ID не установлены в переменных окружения")
 	}
 
-	// Используем клиент с API ключом. Если нужен IAM-токен, используйте соответствующий конструктор
 	client := yandexgpt.NewYandexGPTClientWithAPIKey(apiKey)
 
 	request := yandexgpt.YandexGPTRequest{
-		ModelURI: yandexgpt.MakeModelURI(folderID, yandexgpt.YandexGPT4Model32k), // Укажите ваш folderID
+		ModelURI: yandexgpt.MakeModelURI(folderID, yandexgpt.YandexGPT4Model32k),
 		CompletionOptions: yandexgpt.YandexGPTCompletionOptions{
 			Stream:      false,
-			Temperature: 0.6,  // Немного уменьшил температуру для большей предсказуемости
-			MaxTokens:   1500, // Уменьшил макс. токены, т.к. ответ не должен быть огромным
+			Temperature: 0.6,
+			MaxTokens:   1500,
 		},
 		Messages: []yandexgpt.YandexGPTMessage{
 			{
 				Role: yandexgpt.YandexGPTMessageRoleSystem,
-				Text: descriptionLLM, // Используем константу
+				Text: descriptionLLM,
 			},
 			{
 				Role: yandexgpt.YandexGPTMessageRoleUser,
-				Text: fmt.Sprintf("Вот какие критерии и приоритеты выбрал пользователь: \n%s", details), // Передаем отфильтрованные данные
+				Text: fmt.Sprintf("Вот какие критерии и приоритеты выбрал пользователь: \n%s", details),
 			},
 		},
 	}
@@ -1433,7 +1298,7 @@ func getAISuggestions(details string) (string, error) {
 		"Model":       request.ModelURI,
 		"Temperature": request.CompletionOptions.Temperature,
 		"MaxTokens":   request.CompletionOptions.MaxTokens,
-		"Prompt (начало)": func() string { // Логгируем начало промпта
+		"Prompt (начало)": func() string {
 			if len(request.Messages) > 1 {
 				txt := request.Messages[1].Text
 				if len(txt) > 100 {
@@ -1498,26 +1363,22 @@ Public Cloud
 Обоснование: Пользователь указал высокий приоритет для Масштабируемости и Времени до запуска, а также выбрал Краткосрочный срок использования. Public Cloud наилучшим образом удовлетворяет этим требованиям, позволяя быстро развернуть систему и гибко масштабировать ресурсы без значительных начальных инвестиций. Низкий приоритет Физической безопасности также делает Public Cloud приемлемым вариантом.
 `
 
-// --- Фильтрация строки для LLM (без изменений) ---
 func filterString(input string, patterns ...string) string {
 	var result []string
 	lines := strings.Split(input, "\n")
 	for _, line := range lines {
-		// Пропускаем пустые строки и строку "Детализация расчета:"
 		trimmedLine := strings.TrimSpace(line)
 		if trimmedLine == "" || trimmedLine == "Детализация расчета:" {
 			continue
 		}
 
 		containsPattern := false
-		// Проверяем, содержит ли строка какой-либо из паттернов для исключения
 		for _, pattern := range patterns {
 			if strings.Contains(line, pattern) {
 				containsPattern = true
 				break
 			}
 		}
-		// Если строка НЕ содержит паттерн, добавляем её в результат
 		if !containsPattern {
 			result = append(result, line)
 		}
