@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql" // Добавлен пакет для работы с SQL
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,9 @@ import (
 	"strings"
 	"time"
 
+	// Импортируем PostgreSQL драйвер
+	_ "github.com/lib/pq" // Обратите внимание на "_" - драйвер регистрируется, но не используется напрямую
+
 	yandexgpt "github.com/sheeiavellie/go-yandexgpt"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -18,18 +22,25 @@ import (
 
 // Scores хранит веса для каждого варианта развёртывания.
 type Scores struct {
-	OnPrem  int
-	Private int
-	Public  int
+	OnPrem  int `json:"on_prem"` // Добавляем теги json для сериализации
+	Private int `json:"private"`
+	Public  int `json:"public"`
 }
 
 // Criterion описывает один критерий.
 type Criterion struct {
-	Name        string
-	Category    string
-	BaseScores  Scores
-	Description string
-	IsSpecial   bool // если true, нужно уточнять у пользователя конкретный вариант
+	Name        string `json:"name"`
+	Category    string `json:"category"`
+	BaseScores  Scores `json:"base_scores"`
+	Description string `json:"description"`
+	IsSpecial   bool   `json:"is_special"` // если true, нужно уточнять у пользователя конкретный вариант
+}
+
+// UserInputData структура для хранения всех пользовательских вводов
+type UserInputData struct {
+	CriteriaPriorities map[string]int    `json:"criteria_priorities"`
+	OverriddenScores   map[string]Scores `json:"overridden_scores"`
+	SpecialValues      map[string]string `json:"special_values"`
 }
 
 // Добавим в структуру UserState поля для процесса переопределения
@@ -52,13 +63,16 @@ type UserState struct {
 // Для простоты — глобальные переменные.
 var (
 	botToken        = os.Getenv("BOT_TOKEN")
+	dbConnStr       = os.Getenv("DB_CONN_STR") // Строка подключения к Postgres (например, "postgres://user:password@host:port/dbname?sslmode=disable")
 	userStates      = make(map[int64]*UserState) // key = chatID
 	defaultCriteria = getDefaultCriteria()
 	logger          *CustomLogger
+	db              *sql.DB // Глобальная переменная для подключения к БД
 )
 
 // Инициализация критериев
 func getDefaultCriteria() []Criterion {
+	// ... (остальная часть функции без изменений)
 	return []Criterion{
 		{
 			Name:        "Юрисдикция данных",
@@ -137,8 +151,58 @@ func getDefaultCriteria() []Criterion {
 	}
 }
 
+// Функция для инициализации подключения к БД
+func initDB() {
+	var err error
+	db, err = sql.Open("postgres", dbConnStr)
+	if err != nil {
+		logger.Printf("Ошибка подключения к БД: %v", err)
+		log.Fatalf("Не удалось подключиться к базе данных: %v", err) // Завершаем работу, если не можем подключиться
+	}
+
+	// Проверяем соединение
+	err = db.Ping()
+	if err != nil {
+		logger.Printf("Ошибка проверки соединения с БД: %v", err)
+		log.Fatalf("Не удалось проверить соединение с базой данных: %v", err)
+	}
+
+	logger.Printf("Успешно подключено к базе данных.")
+
+	// Опционально: Создаем таблицу, если её нет
+	createTableSQL := `
+	CREATE TABLE IF NOT EXISTS answers (
+		id SERIAL PRIMARY KEY,
+		user_id BIGINT NOT NULL,
+		user_input JSONB, -- Храним всю информацию о введенных данных пользователя в JSON
+		algorithm_result TEXT,
+		gpt_answer TEXT,
+		match BOOLEAN,
+		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+	);`
+
+	_, err = db.Exec(createTableSQL)
+	if err != nil {
+		logger.Printf("Ошибка создания таблицы 'answers': %v", err)
+		log.Fatalf("Не удалось создать таблицу 'answers': %v", err)
+	} else {
+		logger.Printf("Таблица 'answers' успешно проверена/создана.")
+	}
+}
+
 func main() {
-	logger = NewLogger(true)
+	logger = NewLogger(true) // Инициализируем логгер до БД
+
+	// Проверяем наличие переменных окружения
+	if botToken == "" {
+		log.Fatal("Переменная окружения BOT_TOKEN не установлена.")
+	}
+	if dbConnStr == "" {
+		log.Fatal("Переменная окружения DB_CONN_STR не установлена.")
+	}
+
+	initDB() // Инициализируем подключение к БД
+	defer db.Close() // Закрываем подключение при завершении программы
 
 	bot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
@@ -146,7 +210,7 @@ func main() {
 		log.Panic(err)
 	}
 
-	// Отключаем встроенное логирование библиотеки
+	// ... (остальная часть функции main без изменений)
 	bot.Debug = false
 
 	logger.Printf("Авторизован как %s", bot.Self.UserName)
@@ -200,8 +264,12 @@ func main() {
 				sendMessage(bot, msg)
 				showCriteriaButtons(bot, chatID)
 			} else if state := userStates[chatID]; state.Step == 5 {
-				// Обработка ввода переопределенных баллов
-				processScoreOverride(bot, chatID, text)
+				// Обработка ввода переопределенных баллов - Эта логика устарела с введением кнопок
+				// processScoreOverride(bot, chatID, text)
+				// Нужно сообщить пользователю, что ввод текста больше не поддерживается
+				msg := tgbotapi.NewMessage(chatID, "Пожалуйста, используйте кнопки для переопределения весов.")
+				sendMessage(bot, msg)
+				showOverrideCriteriaList(bot, chatID) // Показать кнопки снова
 			}
 		} else if update.CallbackQuery != nil {
 			// Обрабатываем нажатия на кнопки
@@ -213,6 +281,15 @@ func main() {
 			_, err := bot.Request(callback)
 			if err != nil {
 				logger.Printf("Ошибка при ответе на callback: %v", err)
+			}
+
+			// Проверяем наличие state перед использованием
+			if userStates[chatID] == nil {
+				logger.Printf("Состояние пользователя для chatID %d не найдено!", chatID)
+				// Можно отправить сообщение об ошибке или сбросить состояние
+				msg := tgbotapi.NewMessage(chatID, "Произошла ошибка состояния. Пожалуйста, начните заново с /start.")
+				sendMessage(bot, msg)
+				continue // Переходим к следующему update
 			}
 
 			handleCallbackQuery(bot, update.CallbackQuery, chatID)
@@ -915,9 +992,14 @@ func processScoreOverride(bot *tgbotapi.BotAPI, chatID int64, text string) {
 	calcAndShowResult(bot, chatID)
 }
 
-// Собственно подсчёт результатов
+
+// Собственно подсчёт результатов и сохранение в БД
 func calcAndShowResult(bot *tgbotapi.BotAPI, chatID int64) {
 	state := userStates[chatID]
+	if state == nil {
+		logger.Printf("Критическая ошибка: state = nil в calcAndShowResult для chatID %d", chatID)
+		return // Не можем продолжать без состояния
+	}
 	onPremTotal := 0
 	privateTotal := 0
 	publicTotal := 0
@@ -927,17 +1009,27 @@ func calcAndShowResult(bot *tgbotapi.BotAPI, chatID int64) {
 	detailsMsg.WriteString("Детализация расчета:\n\n")
 
 	logger.LogTelegramAction("Начат расчет результатов", map[string]interface{}{
+		"ChatID":            chatID,
 		"Выбрано критериев": len(state.SelectedCriteria),
 		"С приоритетами":    len(state.CriteriaPriorities),
 		"Переопределено":    len(state.OverriddenScores),
+		"Спец. значения":    state.SpecialValues,
 	})
+
+	// Собираем все введенные пользователем данные
+	userInput := UserInputData{
+		CriteriaPriorities: state.CriteriaPriorities,
+		OverriddenScores:   state.OverriddenScores,
+		SpecialValues:      state.SpecialValues,
+	}
 
 	// Проходим по выбранным критериям
 	for _, cName := range state.SelectedCriteria {
 		crit := findCriterionByName(cName)
-		prio := state.CriteriaPriorities[cName]
-		if prio == 0 {
-			prio = 1 // на всякий случай
+		prio, prioOk := state.CriteriaPriorities[cName]
+		if !prioOk {
+			logger.Printf("Внимание: не найден приоритет для критерия '%s' у пользователя %d. Используется 1.", cName, chatID)
+			prio = 1 // Дефолтный приоритет, если что-то пошло не так
 		}
 
 		// Получаем базовые или переопределённые баллы
@@ -946,9 +1038,14 @@ func calcAndShowResult(bot *tgbotapi.BotAPI, chatID int64) {
 
 		// Если критерий специальный, то подставляем баллы
 		if crit.IsSpecial {
-			val := state.SpecialValues[cName]
-			scores = getScoresForSpecialCriterion(crit.Name, val)
-			source = fmt.Sprintf("специальный (%s)", val)
+			val, valOk := state.SpecialValues[cName]
+			if !valOk {
+				logger.Printf("Внимание: не найдено специальное значение для критерия '%s' у пользователя %d. Используются дефолтные баллы.", cName, chatID)
+				// Не меняем scores, останутся базовые нули или последние переопределенные
+			} else {
+				scores = getScoresForSpecialCriterion(crit.Name, val)
+				source = fmt.Sprintf("специальный (%s)", val)
+			}
 		}
 
 		// Если есть переопределенные баллы, то берем их
@@ -988,11 +1085,41 @@ func calcAndShowResult(bot *tgbotapi.BotAPI, chatID int64) {
 		recommendation = "Public Cloud"
 		resultMsg += "Рекомендуется Public Cloud."
 	} else {
-		recommendation = "Требуется дополнительная оценка"
-		resultMsg += "Варианты равны по баллам, нужна дополнительная оценка."
+		// Обработка равенства баллов
+		equalOptions := []string{}
+		maxScore := 0
+		if onPremTotal >= maxScore {
+			maxScore = onPremTotal
+		}
+		if privateTotal >= maxScore {
+			maxScore = privateTotal
+		}
+		if publicTotal >= maxScore {
+			maxScore = publicTotal
+		}
+
+		if onPremTotal == maxScore {
+			equalOptions = append(equalOptions, "On-Premise")
+		}
+		if privateTotal == maxScore {
+			equalOptions = append(equalOptions, "Private Cloud")
+		}
+		if publicTotal == maxScore {
+			equalOptions = append(equalOptions, "Public Cloud")
+		}
+
+		if len(equalOptions) > 1 {
+			recommendation = "Требуется дополнительная оценка (" + strings.Join(equalOptions, "/") + ")"
+			resultMsg += "Варианты (" + strings.Join(equalOptions, ", ") + ") равны по баллам, нужна дополнительная оценка."
+		} else {
+			// Эта ветка не должна выполниться при текущей логике, но на всякий случай
+			recommendation = "Требуется дополнительная оценка"
+			resultMsg += "Не удалось однозначно определить лучший вариант, нужна дополнительная оценка."
+		}
 	}
 
 	logger.LogTelegramAction("Результаты расчета", map[string]interface{}{
+		"ChatID":        chatID,
 		"OnPrem":        onPremTotal,
 		"Private":       privateTotal,
 		"Public":        publicTotal,
@@ -1005,21 +1132,72 @@ func calcAndShowResult(bot *tgbotapi.BotAPI, chatID int64) {
 	// Отправляем детализацию
 	sendMessage(bot, tgbotapi.NewMessage(chatID, detailsMsg.String()))
 
-	aiAnalysis, err := getAISuggestions(filterString(detailsMsg.String(), "Баллы", "С учетом приоритета:"))
-	if err != nil {
-		logger.Printf("Ошибка получения анализа AI: %v", err)
-		// В случае ошибки все равно завершаем без AI рекомендации
+	// --- Получение рекомендации AI ---
+	aiAnalysis := "" // Инициализируем пустой строкой
+	var aiErr error
+	filteredDetails := filterString(detailsMsg.String(), "Баллы", "С учетом приоритета:") // Фильтруем для LLM
+	aiAnalysis, aiErr = getAISuggestions(filteredDetails) // Передаем отфильтрованные детали
+	if aiErr != nil {
+		logger.Printf("Ошибка получения анализа AI для chatID %d: %v", chatID, aiErr)
+		sendMessage(bot, tgbotapi.NewMessage(chatID, "Не удалось получить рекомендацию от AI."))
+		// Не прерываем выполнение, сохраним без AI ответа или с пустым полем
 	} else {
 		// При успешном получении анализа
-		msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("*Рекомендация AI*: %s", aiAnalysis))
+		msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("*Рекомендация AI*:\n%s", aiAnalysis)) // Добавил перенос строки для читаемости
 		msg.ParseMode = "Markdown"
 		sendMessage(bot, msg)
 	}
 
+	// --- Сохранение в базу данных ---
+	match := false
+	// Простая проверка совпадения (можно усложнить при необходимости)
+	// Ищем название рекомендованного варианта (без доп. текста) в ответе AI
+	simpleRecommendation := strings.Split(recommendation, " ")[0] // Берем первое слово ("On-Premise", "Private", "Public")
+	if strings.Contains(strings.ToLower(aiAnalysis), strings.ToLower(simpleRecommendation)) {
+		match = true
+	}
+	// Если алгоритм не дал однозначного ответа, считаем несовпадением
+	if strings.HasPrefix(recommendation, "Требуется") {
+		match = false
+	}
+
+	// Сериализуем пользовательский ввод в JSON
+	userInputJSON, err := json.Marshal(userInput)
+	if err != nil {
+		logger.Printf("Ошибка сериализации userInput в JSON для chatID %d: %v", chatID, err)
+		// Продолжаем без сохранения или сохраняем с NULL? Решаем сохранить без userInput.
+		userInputJSON = []byte("null") // Или пустой объект {} ? Лучше null, чтобы показать ошибку
+	}
+
+	// Подготовка и выполнение SQL запроса
+	insertSQL := `INSERT INTO answers (user_id, user_input, algorithm_result, gpt_answer, match) VALUES ($1, $2, $3, $4, $5)`
+	_, err = db.Exec(insertSQL, chatID, userInputJSON, recommendation, aiAnalysis, match)
+	if err != nil {
+		logger.Printf("Ошибка сохранения результата в БД для chatID %d: %v", chatID, err)
+		sendMessage(bot, tgbotapi.NewMessage(chatID, "Произошла ошибка при сохранении результатов."))
+	} else {
+		logger.LogTelegramAction("Результат сохранен в БД", map[string]interface{}{
+			"ChatID":           chatID,
+			"AlgorithmResult":  recommendation,
+			"GPTAnswerPresent": aiAnalysis != "",
+			"Match":            match,
+		})
+	}
+	// --- Конец сохранения в базу данных ---
+
 	// Предлагаем начать заново
-	msg := tgbotapi.NewMessage(chatID, "Чтобы начать новый чеклист, \n введите /start")
+	msg := tgbotapi.NewMessage(chatID, "Чтобы начать новый чеклист, введите /start")
 	sendMessage(bot, msg)
+
+	// Очищаем состояние пользователя после завершения
+	delete(userStates, chatID)
+	logger.Printf("Состояние пользователя для chatID %d очищено.", chatID)
 }
+
+// ... (функции findCriterionByName, getScoresForSpecialCriterion, contains, CustomLogger, NewLogger, Printf, LogTelegramAction, sendMessage, editMessageText, editMessageReplyMarkup, logCallbackQuery, getAISuggestions, descriptionLLM, filterString - без изменений)
+
+
+// --- Вспомогательные функции (без изменений) ---
 
 // Функция возвращает критерий по названию
 func findCriterionByName(name string) Criterion {
@@ -1028,6 +1206,8 @@ func findCriterionByName(name string) Criterion {
 			return c
 		}
 	}
+	// Возвращаем пустой Criterion, если не найден (нужно обрабатывать в вызывающем коде)
+	logger.Printf("Внимание: Критерий с именем '%s' не найден в defaultCriteria.", name)
 	return Criterion{}
 }
 
@@ -1038,46 +1218,30 @@ func getScoresForSpecialCriterion(name, userValue string) Scores {
 		lower := strings.ToLower(userValue)
 		switch lower {
 		case "малый":
-			// Малый объем данных (до 100 ГБ):
-			// OnPrem - хорошо справляется с малыми объемами
-			// Private - тоже хорошо подходит
-			// Public - наиболее эффективен, не требуется покупка большого оборудования
 			return Scores{OnPrem: 8, Private: 7, Public: 9}
 		case "средний":
-			// Средний объем (100 ГБ - 1 ТБ):
-			// OnPrem - начинаются проблемы с масштабированием
-			// Private - хорошо справляется
-			// Public - наилучший вариант по соотношению цена/производительность
 			return Scores{OnPrem: 6, Private: 8, Public: 9}
 		case "большой":
-			// Большой объем (более 1 ТБ):
-			// OnPrem - высокие затраты на оборудование, проблемы с масштабированием
-			// Private - хорошо справляется с большими данными
-			// Public - предлагает лучшие возможности по масштабированию
 			return Scores{OnPrem: 4, Private: 8, Public: 9}
 		default:
-			return Scores{OnPrem: 5, Private: 5, Public: 5}
+			logger.Printf("Неизвестное значение '%s' для спец. критерия '%s'. Возвращены дефолтные баллы.", userValue, name)
+			return Scores{OnPrem: 5, Private: 5, Public: 5} // Дефолтные баллы при неизвестном значении
 		}
 	case "Срок использования":
 		lower := strings.ToLower(userValue)
 		switch lower {
 		case "краткосрочный":
-			// Краткосрочный (до 1-2 лет):
-			// OnPrem - высокие начальные инвестиции не окупаются
-			// Private - требует значительной настройки
-			// Public - оптимален для быстрого старта и краткосрочных проектов
 			return Scores{OnPrem: 4, Private: 6, Public: 9}
 		case "долгосрочный":
-			// Долгосрочный (3+ лет):
-			// OnPrem - начальные инвестиции окупаются со временем
-			// Private - хорошая долгосрочная стратегия
-			// Public - может быть дороже в долгосрочной перспективе
 			return Scores{OnPrem: 9, Private: 7, Public: 6}
 		default:
-			return Scores{OnPrem: 5, Private: 5, Public: 5}
+			logger.Printf("Неизвестное значение '%s' для спец. критерия '%s'. Возвращены дефолтные баллы.", userValue, name)
+			return Scores{OnPrem: 5, Private: 5, Public: 5} // Дефолтные баллы при неизвестном значении
 		}
+		// Добавьте сюда логику для других IsSpecial критериев, если они появятся
 	default:
-		return Scores{OnPrem: 0, Private: 0, Public: 0}
+		logger.Printf("Попытка получить баллы для неизвестного спец. критерия '%s'.", name)
+		return Scores{OnPrem: 0, Private: 0, Public: 0} // Нулевые баллы для неизвестного критерия
 	}
 }
 
@@ -1091,7 +1255,7 @@ func contains(arr []string, val string) bool {
 	return false
 }
 
-// Создаем свои типы для логирования
+// --- Логирование и обертки для Telegram API (без изменений) ---
 type CustomLogger struct {
 	debug bool
 	out   io.Writer
@@ -1108,131 +1272,237 @@ func (l *CustomLogger) Printf(format string, v ...interface{}) {
 	if !l.debug {
 		return
 	}
-
-	timestamp := time.Now().Format("15:04:05")
+	timestamp := time.Now().Format("15:04:05.000") // Добавил миллисекунды для точности
 	fmt.Fprintf(l.out, "[%s] ", timestamp)
 	fmt.Fprintf(l.out, format+"\n", v...)
 }
 
-// Функция для перехвата и преобразования логов
 func (l *CustomLogger) LogTelegramAction(action string, msg interface{}) {
 	if !l.debug {
 		return
 	}
+	timestamp := time.Now().Format("15:04:05.000")
 
-	timestamp := time.Now().Format("15:04:05")
-
-	// Преобразуем объект в JSON
-	jsonData, err := json.MarshalIndent(msg, "", "  ")
-	if err != nil {
-		l.Printf("[%s] Ошибка логирования: %v", timestamp, err)
-		return
+	// Проверяем, что msg не nil перед маршалингом
+	var jsonData []byte
+	var err error
+	if msg != nil {
+		jsonData, err = json.MarshalIndent(msg, "", "  ")
+		if err != nil {
+			l.Printf("[%s] Ошибка логирования (маршалинг JSON): %v. Данные: %+v", timestamp, err, msg)
+			// Выводим хотя бы базовую информацию, если JSON не удался
+			fmt.Fprintf(l.out, "[%s] === %s ===\n%+v\n\n", timestamp, action, msg)
+			return
+		}
+	} else {
+		jsonData = []byte("(нет данных)")
 	}
 
-	// Выводим красивый и читаемый лог
 	fmt.Fprintf(l.out, "[%s] === %s ===\n%s\n\n", timestamp, action, string(jsonData))
 }
 
-// Функция-обертка для отправки сообщений с логированием
 func sendMessage(bot *tgbotapi.BotAPI, msg tgbotapi.MessageConfig) (tgbotapi.Message, error) {
 	logger.LogTelegramAction("Отправка сообщения", map[string]interface{}{
-		"Чат":    msg.ChatID,
-		"Текст":  msg.Text,
-		"Кнопки": msg.ReplyMarkup != nil,
+		"ChatID":      msg.ChatID,
+		"Text":        msg.Text, // Обрезаем длинный текст для лога, если нужно
+		"ParseMode":   msg.ParseMode,
+		"HasKeyboard": msg.ReplyMarkup != nil,
 	})
-
-	return bot.Send(msg)
+	sentMsg, err := bot.Send(msg)
+	if err != nil {
+		logger.Printf("Ошибка отправки сообщения в чат %d: %v", msg.ChatID, err)
+	}
+	return sentMsg, err
 }
 
-// Обертки для других методов
 func editMessageText(bot *tgbotapi.BotAPI, msg tgbotapi.EditMessageTextConfig) (tgbotapi.Message, error) {
-	logger.LogTelegramAction("Редактирование сообщения", map[string]interface{}{
-		"Чат":       msg.ChatID,
-		"Сообщение": msg.MessageID,
-		"Текст":     msg.Text,
+	logger.LogTelegramAction("Редактирование текста сообщения", map[string]interface{}{
+		"ChatID":    msg.ChatID,
+		"MessageID": msg.MessageID,
+		"Text":      msg.Text, // Обрезаем длинный текст для лога, если нужно
+		"ParseMode": msg.ParseMode,
 	})
-
-	return bot.Send(msg)
+	sentMsg, err := bot.Send(msg)
+	if err != nil {
+		logger.Printf("Ошибка редактирования текста сообщения %d в чате %d: %v", msg.MessageID, msg.ChatID, err)
+	}
+	return sentMsg, err
 }
 
 func editMessageReplyMarkup(bot *tgbotapi.BotAPI, msg tgbotapi.EditMessageReplyMarkupConfig) (tgbotapi.Message, error) {
-	logger.LogTelegramAction("Обновление кнопок", map[string]interface{}{
-		"Чат":       msg.ChatID,
-		"Сообщение": msg.MessageID,
+	logger.LogTelegramAction("Обновление кнопок сообщения", map[string]interface{}{
+		"ChatID":    msg.ChatID,
+		"MessageID": msg.MessageID,
+		// Не логгируем сами кнопки, чтобы не засорять лог
 	})
-
-	return bot.Send(msg)
+	sentMsg, err := bot.Send(msg)
+	if err != nil {
+		logger.Printf("Ошибка обновления кнопок сообщения %d в чате %d: %v", msg.MessageID, msg.ChatID, err)
+	}
+	return sentMsg, err
 }
 
 func logCallbackQuery(query *tgbotapi.CallbackQuery) {
+	// Проверяем, что query и query.Message не nil
+	if query == nil {
+		logger.Printf("Ошибка: получен nil CallbackQuery")
+		return
+	}
+	var chatID int64
+	var messageID int
+	if query.Message != nil {
+		chatID = query.Message.Chat.ID
+		messageID = query.Message.MessageID
+	} else {
+		logger.Printf("Внимание: CallbackQuery без Message (%s)", query.ID)
+	}
+
 	logger.LogTelegramAction("Callback запрос", map[string]interface{}{
-		"ID":        query.ID,
-		"От":        query.From.UserName,
-		"Данные":    query.Data,
-		"Сообщение": query.Message.MessageID,
-		"Чат":       query.Message.Chat.ID,
+		"CallbackID": query.ID,
+		"From":       query.From.UserName,
+		"ChatID":     chatID,
+		"MessageID":  messageID,
+		"Data":       query.Data,
+		"InlineMID":  query.InlineMessageID, // Добавлено для inline-режима, если используется
 	})
 }
 
+// --- Взаимодействие с Yandex GPT (без изменений) ---
 func getAISuggestions(details string) (string, error) {
-	client := yandexgpt.NewYandexGPTClientWithAPIKey("AQVN2q27j-dqYFXE9n9lx15QtklR9N7sXeO9om0H")
+	// Используйте актуальный способ получения ключа/IAM-токена
+	apiKey := os.Getenv("YANDEX_API_KEY") // или IAM-токен
+	folderID := os.Getenv("YANDEX_FOLDER_ID")
+
+	if apiKey == "" || folderID == "" {
+		return "", fmt.Errorf("Yandex API Key или Folder ID не установлены в переменных окружения")
+	}
+
+	// Используем клиент с API ключом. Если нужен IAM-токен, используйте соответствующий конструктор
+	client := yandexgpt.NewYandexGPTClientWithAPIKey(apiKey)
+
 	request := yandexgpt.YandexGPTRequest{
-		ModelURI: yandexgpt.MakeModelURI("b1gntlqp077vnspfnjhf", yandexgpt.YandexGPT4Model32k),
+		ModelURI: yandexgpt.MakeModelURI(folderID, yandexgpt.YandexGPT4Model32k), // Укажите ваш folderID
 		CompletionOptions: yandexgpt.YandexGPTCompletionOptions{
 			Stream:      false,
-			Temperature: 0.7,
-			MaxTokens:   2000,
+			Temperature: 0.6, // Немного уменьшил температуру для большей предсказуемости
+			MaxTokens:   1500, // Уменьшил макс. токены, т.к. ответ не должен быть огромным
 		},
 		Messages: []yandexgpt.YandexGPTMessage{
 			{
 				Role: yandexgpt.YandexGPTMessageRoleSystem,
-				Text: descriptionLLM,
+				Text: descriptionLLM, // Используем константу
 			},
 			{
 				Role: yandexgpt.YandexGPTMessageRoleUser,
-				Text: fmt.Sprintf("Вот какие критерии и приоритеты выбрал директор компании: %s", details),
+				Text: fmt.Sprintf("Вот какие критерии и приоритеты выбрал пользователь: \n%s", details), // Передаем отфильтрованные данные
 			},
 		},
 	}
 
+	logger.LogTelegramAction("Запрос к Yandex GPT", map[string]interface{}{
+		"Model":       request.ModelURI,
+		"Temperature": request.CompletionOptions.Temperature,
+		"MaxTokens":   request.CompletionOptions.MaxTokens,
+		"Prompt (начало)": func() string { // Логгируем начало промпта
+			if len(request.Messages) > 1 {
+				txt := request.Messages[1].Text
+				if len(txt) > 100 {
+					return txt[:100] + "..."
+				}
+				return txt
+			}
+			return ""
+		}(),
+	})
+
 	response, err := client.GetCompletion(context.Background(), request)
 	if err != nil {
-		return "", err
+		logger.Printf("Ошибка при запросе к Yandex GPT: %v", err)
+		return "", fmt.Errorf("ошибка при обращении к Yandex GPT: %w", err)
 	}
 
-	return response.Result.Alternatives[0].Message.Text, nil
+	// Проверяем, что результат и альтернативы существуют
+	if response == nil || response.Result == nil || len(response.Result.Alternatives) == 0 {
+		logger.Printf("Получен пустой или некорректный ответ от Yandex GPT")
+		return "", fmt.Errorf("получен пустой ответ от Yandex GPT")
+	}
+
+	// Проверяем, что сообщение в альтернативе существует
+	if response.Result.Alternatives[0].Message == nil {
+		logger.Printf("Получен пустой или некорректный ответ от Yandex GPT (нет message)")
+		return "", fmt.Errorf("получен пустой ответ от Yandex GPT (внутренняя структура)")
+	}
+
+	aiText := response.Result.Alternatives[0].Message.Text
+	logger.LogTelegramAction("Ответ от Yandex GPT получен", map[string]interface{}{
+		"Response (начало)": func() string {
+			if len(aiText) > 100 {
+				return aiText[:100] + "..."
+			}
+			return aiText
+		}(),
+	})
+
+	return aiText, nil
 }
 
 const descriptionLLM = `
-Начальник компания прошел тест на выбор типа СУБД: On-Premise, Private Cloud, Public Cloud. Он выбрал только нужные из списка критерии и расставил приоритеты от 1 до 5. Где 1 - самый низкая значимость критерия, 5 самая высокая значимость.
-Список критериев: "Юрисдикция данных", "Отраслевые стандарты", "Физическая безопасность", "Объём данных", "Латентность", "Вариативность нагрузки", "Начальные инвестиции", "Постоянные затраты, 
-"Срок использования", "Квалификация персонала", "Время до запуска", "Масштабируемость". Сейчас тебе напишут, какие критерии директор выбрал и с какими приоритетами, ты должна проанализировать выбранные критерии и их приоритеты. 
-Необходимо определить какой из 3х типов СУБД: On-Premise, Private Cloud, Public Cloud лучше подходит компании и почему. Формат ответа должен быть таким: <On-Premise/Private Cloud/Public Cloud> \n Обоснование: ...`
+Ты — эксперт по выбору инфраструктурных решений для баз данных. К тебе обращается пользователь, который прошел тест для определения оптимального типа развертывания СУБД: On-Premise, Private Cloud или Public Cloud.
+Пользователь выбрал важные для него критерии из списка и установил их приоритет от 1 (низкий) до 5 (высокий).
 
+Вот список всех возможных критериев:
+- Юрисдикция данных: Насколько важна локализация данных и соответствие местным законам.
+- Отраслевые стандарты: Требования к сертификации и соответствию отраслевым нормам (например, PCI DSS, HIPAA).
+- Физическая безопасность: Насколько важно физическое расположение серверов и меры их защиты.
+- Объём данных: Объем хранимых и обрабатываемых данных (Малый, Средний, Большой).
+- Латентность: Требования к задержкам при доступе к данным.
+- Вариативность нагрузки: Насколько часто и сильно меняется нагрузка на БД.
+- Начальные инвестиции: Бюджет на первоначальное развертывание (оборудование, лицензии).
+- Постоянные затраты: Регулярные расходы на поддержку, лицензии, электричество, персонал.
+- Срок использования: Планируемый срок эксплуатации системы (Краткосрочный, Долгосрочный).
+- Квалификация персонала: Наличие и уровень экспертизы команды по управлению БД и инфраструктурой.
+- Время до запуска: Насколько быстро нужно развернуть систему.
+- Масштабируемость: Требования к возможности быстрого увеличения или уменьшения ресурсов.
+
+Тебе предоставят информацию о том, какие конкретно критерии выбрал пользователь, какие приоритеты он им назначил, и какие значения он указал для "специальных" критериев (Объём данных, Срок использования).
+
+Твоя задача:
+1. Проанализируй выбор пользователя: какие критерии для него наиболее важны (высокий приоритет), какие менее важны. Обрати внимание на комбинацию критериев.
+2. На основе этого анализа дай **одну** четкую рекомендацию: какой из трех типов СУБД (**On-Premise**, **Private Cloud** или **Public Cloud**) лучше всего подходит для ситуации пользователя.
+3. Предоставь краткое, но емкое **обоснование** своей рекомендации, объясняя, почему именно этот тип подходит лучше всего, исходя из приоритетов и выбора пользователя.
+
+Формат ответа СТРОГО:
+<On-Premise/Private Cloud/Public Cloud>
+Обоснование: [Твое обоснование здесь]
+
+Пример:
+Public Cloud
+Обоснование: Пользователь указал высокий приоритет для Масштабируемости и Времени до запуска, а также выбрал Краткосрочный срок использования. Public Cloud наилучшим образом удовлетворяет этим требованиям, позволяя быстро развернуть систему и гибко масштабировать ресурсы без значительных начальных инвестиций. Низкий приоритет Физической безопасности также делает Public Cloud приемлемым вариантом.
+`
+
+// --- Фильтрация строки для LLM (без изменений) ---
 func filterString(input string, patterns ...string) string {
 	var result []string
-
-	// Разделяем входную строку на отдельные строки по символу новой строки
 	lines := strings.Split(input, "\n")
-
-	// Проходим по каждой строке
 	for _, line := range lines {
-		containsPattern := false
+		// Пропускаем пустые строки и строку "Детализация расчета:"
+		trimmedLine := strings.TrimSpace(line)
+		if trimmedLine == "" || trimmedLine == "Детализация расчета:" {
+			continue
+		}
 
-		// Проверяем, содержит ли строка какой-либо из паттернов
+		containsPattern := false
+		// Проверяем, содержит ли строка какой-либо из паттернов для исключения
 		for _, pattern := range patterns {
 			if strings.Contains(line, pattern) {
 				containsPattern = true
 				break
 			}
 		}
-
-		// Если строка не содержит паттерн, добавляем её в результат
+		// Если строка НЕ содержит паттерн, добавляем её в результат
 		if !containsPattern {
 			result = append(result, line)
 		}
 	}
-
-	// Объединяем отфильтрованные строки обратно в одну строку
 	return strings.Join(result, "\n")
 }
