@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"database/sql" // Добавлен пакет для работы с SQL
 	"encoding/json"
 	"fmt"
@@ -11,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v4"
 
 	// Импортируем PostgreSQL драйвер
 	_ "github.com/lib/pq" // Обратите внимание на "_" - драйвер регистрируется, но не используется напрямую
@@ -63,7 +67,12 @@ type UserState struct {
 // Для простоты — глобальные переменные.
 var (
 	botToken        = os.Getenv("BOT_TOKEN")
-	dbConnStr       = os.Getenv("DB_CONN_STR") // Строка подключения к Postgres (например, "postgres://user:password@host:port/dbname?sslmode=disable")
+	host            = "rc1d-7vowbk5nhczg7plw.mdb.yandexcloud.net"
+	port            = 6432
+	user            = "mvpshe"
+	password        = os.Getenv("DB_PASSWORD")
+	dbname          = "db"
+	ca              = "/home/r-neimar/.postgresql/root.crt"
 	userStates      = make(map[int64]*UserState) // key = chatID
 	defaultCriteria = getDefaultCriteria()
 	logger          *CustomLogger
@@ -153,15 +162,39 @@ func getDefaultCriteria() []Criterion {
 
 // Функция для инициализации подключения к БД
 func initDB() {
-	var err error
-	db, err = sql.Open("postgres", dbConnStr)
+	rootCertPool := x509.NewCertPool()
+	pem, err := os.ReadFile(ca)
 	if err != nil {
-		logger.Printf("Ошибка подключения к БД: %v", err)
-		log.Fatalf("Не удалось подключиться к базе данных: %v", err) // Завершаем работу, если не можем подключиться
+		panic(err)
+	}
+
+	if ok := rootCertPool.AppendCertsFromPEM(pem); !ok {
+		panic("Failed to append PEM.")
+	}
+
+	connString := fmt.Sprintf(
+		"host=%s port=%d dbname=%s user=%s password=%s sslmode=verify-full target_session_attrs=read-write",
+		host, port, dbname, user, password)
+
+	connConfig, err := pgx.ParseConfig(connString)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Unable to parse config: %v\n", err)
+		os.Exit(1)
+	}
+
+	connConfig.TLSConfig = &tls.Config{
+		RootCAs:            rootCertPool,
+		InsecureSkipVerify: true,
+	}
+
+	conn, err := pgx.ConnectConfig(context.Background(), connConfig)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Unable to connect to database: %v\n", err)
+		os.Exit(1)
 	}
 
 	// Проверяем соединение
-	err = db.Ping()
+	err = conn.Ping(context.Background())
 	if err != nil {
 		logger.Printf("Ошибка проверки соединения с БД: %v", err)
 		log.Fatalf("Не удалось проверить соединение с базой данных: %v", err)
@@ -197,11 +230,11 @@ func main() {
 	if botToken == "" {
 		log.Fatal("Переменная окружения BOT_TOKEN не установлена.")
 	}
-	if dbConnStr == "" {
-		log.Fatal("Переменная окружения DB_CONN_STR не установлена.")
+	if password == "" {
+		log.Fatal("Переменная окружения DB_PASSWORD не установлена.")
 	}
 
-	initDB() // Инициализируем подключение к БД
+	initDB()         // Инициализируем подключение к БД
 	defer db.Close() // Закрываем подключение при завершении программы
 
 	bot, err := tgbotapi.NewBotAPI(botToken)
@@ -992,7 +1025,6 @@ func processScoreOverride(bot *tgbotapi.BotAPI, chatID int64, text string) {
 	calcAndShowResult(bot, chatID)
 }
 
-
 // Собственно подсчёт результатов и сохранение в БД
 func calcAndShowResult(bot *tgbotapi.BotAPI, chatID int64) {
 	state := userStates[chatID]
@@ -1136,7 +1168,7 @@ func calcAndShowResult(bot *tgbotapi.BotAPI, chatID int64) {
 	aiAnalysis := "" // Инициализируем пустой строкой
 	var aiErr error
 	filteredDetails := filterString(detailsMsg.String(), "Баллы", "С учетом приоритета:") // Фильтруем для LLM
-	aiAnalysis, aiErr = getAISuggestions(filteredDetails) // Передаем отфильтрованные детали
+	aiAnalysis, aiErr = getAISuggestions(filteredDetails)                                 // Передаем отфильтрованные детали
 	if aiErr != nil {
 		logger.Printf("Ошибка получения анализа AI для chatID %d: %v", chatID, aiErr)
 		sendMessage(bot, tgbotapi.NewMessage(chatID, "Не удалось получить рекомендацию от AI."))
@@ -1195,7 +1227,6 @@ func calcAndShowResult(bot *tgbotapi.BotAPI, chatID int64) {
 }
 
 // ... (функции findCriterionByName, getScoresForSpecialCriterion, contains, CustomLogger, NewLogger, Printf, LogTelegramAction, sendMessage, editMessageText, editMessageReplyMarkup, logCallbackQuery, getAISuggestions, descriptionLLM, filterString - без изменений)
-
 
 // --- Вспомогательные функции (без изменений) ---
 
@@ -1384,7 +1415,7 @@ func getAISuggestions(details string) (string, error) {
 		ModelURI: yandexgpt.MakeModelURI(folderID, yandexgpt.YandexGPT4Model32k), // Укажите ваш folderID
 		CompletionOptions: yandexgpt.YandexGPTCompletionOptions{
 			Stream:      false,
-			Temperature: 0.6, // Немного уменьшил температуру для большей предсказуемости
+			Temperature: 0.6,  // Немного уменьшил температуру для большей предсказуемости
 			MaxTokens:   1500, // Уменьшил макс. токены, т.к. ответ не должен быть огромным
 		},
 		Messages: []yandexgpt.YandexGPTMessage{
