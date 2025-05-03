@@ -13,7 +13,9 @@ services:
     networks:
       - checklist_network
     volumes:
-      - ./.postgresql/root.crt:/etc/ssl/certs/root.crt:ro  
+      - ./.postgresql/root.crt:/etc/ssl/certs/root.crt:ro
+    ports:
+      - "8080:8080"
 
 networks:
   checklist_network:
