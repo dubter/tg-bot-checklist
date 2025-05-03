@@ -13,7 +13,6 @@ import (
 	"time"
 )
 
-// Структуры запроса
 type Scores struct {
 	OnPrem  int `json:"on_prem"`
 	Private int `json:"private"`
@@ -23,11 +22,9 @@ type Scores struct {
 type RecommendationRequest struct {
 	SelectedCriteria   []string          `json:"selected_criteria"`
 	CriteriaPriorities map[string]int    `json:"criteria_priorities"`
-	OverriddenScores   map[string]Scores `json:"overridden_scores"`
 	SpecialValues      map[string]string `json:"special_values"`
 }
 
-// Структуры ответа
 type CriterionDetail struct {
 	Name            string `json:"name"`
 	Priority        int    `json:"priority"`
@@ -49,7 +46,6 @@ type RecommendationResponse struct {
 	AIAnalysis     string            `json:"ai_analysis,omitempty"`
 }
 
-// Все возможные критерии
 var allCriteria = []string{
 	"Юрисдикция данных",
 	"Отраслевые стандарты",
@@ -65,13 +61,11 @@ var allCriteria = []string{
 	"Масштабируемость",
 }
 
-// Специальные критерии и их возможные значения
 var specialCriteria = map[string][]string{
 	"Объём данных":       {"Малый", "Средний", "Большой"},
 	"Срок использования": {"Краткосрочный", "Долгосрочный"},
 }
 
-// Статистика по запросам
 type RequestStats struct {
 	Duration       time.Duration
 	StatusCode     int
@@ -109,7 +103,6 @@ func main() {
 	}
 }
 
-// Генерирует разнообразные запросы
 func generateRequests(count int) []RecommendationRequest {
 	rand.Seed(time.Now().UnixNano())
 	requests := make([]RecommendationRequest, count)
@@ -117,81 +110,55 @@ func generateRequests(count int) []RecommendationRequest {
 	for i := 0; i < count; i++ {
 		req := RecommendationRequest{
 			CriteriaPriorities: make(map[string]int),
-			OverriddenScores:   make(map[string]Scores),
 			SpecialValues:      make(map[string]string),
 		}
 
-		// Выбираем случайное количество критериев (минимум 1)
 		numCriteria := rand.Intn(len(allCriteria)-1) + 1
-		// Перемешиваем критерии для случайного выбора
 		shuffledCriteria := make([]string, len(allCriteria))
 		copy(shuffledCriteria, allCriteria)
 		rand.Shuffle(len(shuffledCriteria), func(i, j int) {
 			shuffledCriteria[i], shuffledCriteria[j] = shuffledCriteria[j], shuffledCriteria[i]
 		})
 
-		// Выбираем подмножество критериев
 		req.SelectedCriteria = shuffledCriteria[:numCriteria]
 
-		// Устанавливаем приоритеты
 		for _, criterion := range req.SelectedCriteria {
-			req.CriteriaPriorities[criterion] = rand.Intn(5) + 1 // от 1 до 5
+			req.CriteriaPriorities[criterion] = rand.Intn(5) + 1
 		}
 
-		// Устанавливаем значения для специальных критериев, если они выбраны
 		for criterion, values := range specialCriteria {
 			if contains(req.SelectedCriteria, criterion) {
 				req.SpecialValues[criterion] = values[rand.Intn(len(values))]
 			}
 		}
 
-		// Случайно переопределяем веса для некоторых критериев
-		numOverrides := rand.Intn(numCriteria/2 + 1) // не более половины критериев
-		for i := 0; i < numOverrides; i++ {
-			if i < len(req.SelectedCriteria) {
-				criterion := req.SelectedCriteria[i]
-				req.OverriddenScores[criterion] = Scores{
-					OnPrem:  rand.Intn(10) + 1, // от 1 до 10
-					Private: rand.Intn(10) + 1,
-					Public:  rand.Intn(10) + 1,
-				}
-			}
-		}
-
 		requests[i] = req
 	}
 
-	// Добавляем граничные случаи
 	if count > 5 {
-		// Все критерии
 		allCriteriaReq := RecommendationRequest{
 			SelectedCriteria:   allCriteria,
 			CriteriaPriorities: make(map[string]int),
-			OverriddenScores:   make(map[string]Scores),
 			SpecialValues:      make(map[string]string),
 		}
 		for _, criterion := range allCriteria {
-			allCriteriaReq.CriteriaPriorities[criterion] = 3 // средний приоритет
+			allCriteriaReq.CriteriaPriorities[criterion] = 3
 		}
 		for criterion, values := range specialCriteria {
 			allCriteriaReq.SpecialValues[criterion] = values[0]
 		}
 		requests[0] = allCriteriaReq
 
-		// Один критерий
 		singleCriterionReq := RecommendationRequest{
 			SelectedCriteria:   []string{"Юрисдикция данных"},
 			CriteriaPriorities: map[string]int{"Юрисдикция данных": 5},
-			OverriddenScores:   make(map[string]Scores),
 			SpecialValues:      make(map[string]string),
 		}
 		requests[1] = singleCriterionReq
 
-		// Только специальные критерии
 		specialCriteriaReq := RecommendationRequest{
 			SelectedCriteria:   []string{"Объём данных", "Срок использования"},
 			CriteriaPriorities: make(map[string]int),
-			OverriddenScores:   make(map[string]Scores),
 			SpecialValues:      make(map[string]string),
 		}
 		for _, criterion := range specialCriteriaReq.SelectedCriteria {
@@ -206,12 +173,10 @@ func generateRequests(count int) []RecommendationRequest {
 	return requests
 }
 
-// Запускает нагрузочное тестирование
 func runLoadTest(requests []RecommendationRequest, url string, concurrency, delay int, verbose bool) []RequestStats {
 	totalRequests := len(requests)
 	stats := make([]RequestStats, totalRequests)
 
-	// Семафор для ограничения параллелизма
 	sem := make(chan bool, concurrency)
 	var wg sync.WaitGroup
 
@@ -220,15 +185,14 @@ func runLoadTest(requests []RecommendationRequest, url string, concurrency, dela
 
 	for i, req := range requests {
 		wg.Add(1)
-		sem <- true // Получение доступа к семафору
+		sem <- true
 
 		go func(reqIndex int, request RecommendationRequest) {
 			defer func() {
-				<-sem // Освобождение семафора
+				<-sem
 				wg.Done()
 			}()
 
-			// Отправка запроса
 			stat := sendRequest(request, url, verbose)
 			stats[reqIndex] = stat
 
@@ -244,14 +208,13 @@ func runLoadTest(requests []RecommendationRequest, url string, concurrency, dela
 					float64(reqIndex+1)/float64(totalRequests)*100)
 			}
 
-			// Добавляем задержку, если указана
 			if delay > 0 {
 				time.Sleep(time.Duration(delay) * time.Millisecond)
 			}
 		}(i, req)
 	}
 
-	wg.Wait() // Ожидание завершения всех запросов
+	wg.Wait()
 
 	duration := time.Since(startTime)
 	rps := float64(totalRequests) / duration.Seconds()
@@ -262,18 +225,15 @@ func runLoadTest(requests []RecommendationRequest, url string, concurrency, dela
 	return stats
 }
 
-// Отправляет один запрос и возвращает статистику
 func sendRequest(req RecommendationRequest, url string, verbose bool) RequestStats {
 	stat := RequestStats{}
 
-	// Преобразование запроса в JSON
 	jsonData, err := json.Marshal(req)
 	if err != nil {
 		stat.Error = err
 		return stat
 	}
 
-	// Создание HTTP-запроса
 	httpReq, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
 		stat.Error = err
@@ -282,7 +242,6 @@ func sendRequest(req RecommendationRequest, url string, verbose bool) RequestSta
 
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	// Отправка запроса с замером времени
 	startTime := time.Now()
 	client := &http.Client{}
 	resp, err := client.Do(httpReq)
@@ -296,7 +255,6 @@ func sendRequest(req RecommendationRequest, url string, verbose bool) RequestSta
 
 	stat.StatusCode = resp.StatusCode
 
-	// Чтение и анализ ответа
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		stat.Error = err
@@ -320,14 +278,12 @@ func sendRequest(req RecommendationRequest, url string, verbose bool) RequestSta
 	return stat
 }
 
-// Анализирует результаты тестирования
 func analyzeResults(stats []RequestStats, verbose bool) {
 	if len(stats) == 0 {
 		fmt.Println("Нет данных для анализа")
 		return
 	}
 
-	// Подсчет успешных запросов
 	successCount := 0
 	errorCount := 0
 	var totalTime time.Duration
@@ -367,9 +323,7 @@ func analyzeResults(stats []RequestStats, verbose bool) {
 		}
 	}
 
-	// Сортировка времени запросов для расчета перцентилей
 	if len(durations) > 0 {
-		// Сортировка слайса durations
 		for i := 0; i < len(durations); i++ {
 			for j := i + 1; j < len(durations); j++ {
 				if durations[i] > durations[j] {
@@ -378,7 +332,6 @@ func analyzeResults(stats []RequestStats, verbose bool) {
 			}
 		}
 
-		// Расчет статистики
 		avgTime := totalTime / time.Duration(successCount)
 		medianIdx := len(durations) / 2
 		medianTime := durations[medianIdx]
@@ -408,7 +361,6 @@ func analyzeResults(stats []RequestStats, verbose bool) {
 	}
 }
 
-// Сохраняет результаты в JSON-файл
 func saveResults(stats []RequestStats, filename string) {
 	type ResultData struct {
 		TotalRequests      int                      `json:"total_requests"`
@@ -429,7 +381,6 @@ func saveResults(stats []RequestStats, filename string) {
 		DetailedStats:   make([]map[string]interface{}, 0, len(stats)),
 	}
 
-	// Сбор данных
 	successCount := 0
 	var totalTime time.Duration
 	var minTime time.Duration = time.Hour
@@ -470,9 +421,7 @@ func saveResults(stats []RequestStats, filename string) {
 	result.SuccessfulRequests = successCount
 	result.ErrorRequests = len(stats) - successCount
 
-	// Расчет статистики времени ответа
 	if len(durations) > 0 {
-		// Сортировка
 		for i := 0; i < len(durations); i++ {
 			for j := i + 1; j < len(durations); j++ {
 				if durations[i] > durations[j] {
@@ -488,7 +437,6 @@ func saveResults(stats []RequestStats, filename string) {
 		result.P95TimeMs = durations[int(float64(len(durations))*0.95)].Milliseconds()
 	}
 
-	// Сохранение в файл
 	jsonData, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		fmt.Printf("Ошибка при создании JSON: %v\n", err)
@@ -504,7 +452,6 @@ func saveResults(stats []RequestStats, filename string) {
 	fmt.Printf("Результаты сохранены в файл %s\n", filename)
 }
 
-// Вспомогательная функция для проверки наличия строки в массиве
 func contains(arr []string, str string) bool {
 	for _, a := range arr {
 		if a == str {
