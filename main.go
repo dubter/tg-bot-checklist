@@ -72,7 +72,7 @@ var (
 	user            = "mvpshe"
 	password        = os.Getenv("DB_PASSWORD")
 	dbname          = "db"
-	ca              = "/home/r-neimar/.postgresql/root.crt"
+	ca              = "/etc/ssl/certs/root.crt"
 	userStates      = make(map[int64]*UserState) // key = chatID
 	defaultCriteria = getDefaultCriteria()
 	logger          *CustomLogger

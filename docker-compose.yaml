@@ -12,6 +12,8 @@ services:
       - YANDEX_FOLDER_ID=${YANDEX_FOLDER_ID}
     networks:
       - checklist_network
+    volumes:
+      - ./.postgresql/root.crt:/etc/ssl/certs/root.crt:ro  
 
 networks:
   checklist_network:
