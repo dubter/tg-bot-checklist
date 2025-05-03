@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v5"
 
 	// Импортируем PostgreSQL драйвер
 	_ "github.com/lib/pq" // Обратите внимание на "_" - драйвер регистрируется, но не используется напрямую
