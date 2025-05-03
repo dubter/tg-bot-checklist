@@ -1421,18 +1421,6 @@ func getAISuggestions(details string) (string, error) {
 		return "", fmt.Errorf("ошибка при обращении к Yandex GPT: %w", err)
 	}
 
-	// Проверяем, что результат и альтернативы существуют
-	if response == nil || response.Result == nil || len(response.Result.Alternatives) == 0 {
-		logger.Printf("Получен пустой или некорректный ответ от Yandex GPT")
-		return "", fmt.Errorf("получен пустой ответ от Yandex GPT")
-	}
-
-	// Проверяем, что сообщение в альтернативе существует
-	if response.Result.Alternatives[0].Message == nil {
-		logger.Printf("Получен пустой или некорректный ответ от Yandex GPT (нет message)")
-		return "", fmt.Errorf("получен пустой ответ от Yandex GPT (внутренняя структура)")
-	}
-
 	aiText := response.Result.Alternatives[0].Message.Text
 	logger.LogTelegramAction("Ответ от Yandex GPT получен", map[string]interface{}{
 		"Response (начало)": func() string {
