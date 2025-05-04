@@ -18,6 +18,10 @@ go build -o loadtest tests/main.go
 
 ![](images/architecture.png)
 
+### Схема таблиц
+
+![](images/answers.png)
+
 ### Promt Yandex GPT Pro
 ```
 Ты — эксперт по выбору инфраструктурных решений для баз данных. К тебе обращается пользователь, который прошел тест для определения оптимального типа развертывания СУБД: On-Premise, Private Cloud или Public Cloud.
