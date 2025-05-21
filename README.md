@@ -20,7 +20,7 @@ go build -o loadtest tests/main.go
 
 ### Схема таблиц
 
-![](images/answers.png)
+![](images/table_answers.png)
 
 ### Promt Yandex GPT Pro
 ```
